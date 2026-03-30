@@ -1,0 +1,26 @@
+2026-03-29 23:55:28,404 INFO: main_0 | gen_0: start
+2026-03-29 23:55:28,545 INFO: mlp_2 has been submitted
+2026-03-29 23:55:28,581 INFO: mlp_1 has been submitted
+2026-03-29 23:55:28,617 INFO: mlp_0 has been submitted
+2026-03-29 23:57:28,834 INFO: All training_mlp tasks have been completed
+2026-03-29 23:57:29,260 INFO: LiF: Task is submitted
+2026-03-29 23:58:19,377 INFO: All MD calculations have been completed
+2026-03-29 23:58:23,952 INFO: LiF/npt/200: According to the ambiguity in the 0.08-0.3 range , 0 structures are selected from 1001 structures. Interval:[0.0, 0.08, 0.2, 0.4, 0.6000000000000001, 0.8, 1.0] Statistical number:[1001    0    0    0    0    0]
+2026-03-29 23:58:23,963 INFO: The active learning loop ends
+2026-03-29 23:58:31,623 INFO: main_1 | gen_0: start
+2026-03-29 23:58:31,815 INFO: LiF: Task is submitted
+2026-03-29 23:59:22,114 INFO: All MD calculations have been completed
+2026-03-29 23:59:26,849 INFO: LiF/npt/300: According to the ambiguity in the 0.08-0.3 range , 2 structures are selected from 1001 structures. Interval:[0.0, 0.08, 0.2, 0.4, 0.6000000000000001, 0.8, 1.0] Statistical number:[999   2   0   0   0   0]
+2026-03-29 23:59:27,370 INFO: The 2 structures are divided into 2 dft calculation tasks to be submitted
+2026-03-29 23:59:27,370 INFO: In the process of checking whether the SCF calculation is complete......
+2026-03-29 23:59:47,556 INFO: All scf calculations have been completed
+2026-03-29 23:59:47,578 INFO: Active learning continues: gen_0 | abacus_completed_number:2 | Successful_collection_structure/scf_convergent_number:2 | force_threshold_number(20):2
+2026-03-29 23:59:54,853 INFO: main_1 | gen_1: start
+2026-03-29 23:59:55,009 INFO: mlp_2 has been submitted
+2026-03-29 23:59:55,048 INFO: mlp_1 has been submitted
+2026-03-29 23:59:55,084 INFO: mlp_0 has been submitted
+2026-03-30 00:00:55,219 INFO: All training_mlp tasks have been completed
+2026-03-30 00:00:55,470 INFO: LiF: Task is submitted
+2026-03-30 00:01:45,590 INFO: All MD calculations have been completed
+2026-03-30 00:01:50,034 INFO: LiF/npt/300: According to the ambiguity in the 0.08-0.3 range , 0 structures are selected from 1001 structures. Interval:[0.0, 0.08, 0.2, 0.4, 0.6000000000000001, 0.8, 1.0] Statistical number:[1001    0    0    0    0    0]
+2026-03-30 00:01:50,045 INFO: The active learning loop ends

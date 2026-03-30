@@ -1,0 +1,166 @@
+INFO:logger:main_0 | gen_0: start
+Job <3547152> is submitted to queue <33>.
+INFO:logger:mlp_0 has been submitted
+INFO:logger:All training_mlp tasks have been completed
+Job <3547153> is submitted to queue <33>.
+INFO:logger:LiF: Task is submitted
+INFO:logger:All MD calculations have been completed
+INFO:logger:Complete coding process.
+INFO:logger:per_configuration mean_descriptor coverage: {'LiF': [99.5879]}
+INFO:logger:per_configuration mean_descriptor selected_count: {'LiF': 5}
+INFO:logger:per_configuration two-body coverage: {'LiF': [98.8886, 98.8761]}
+INFO:logger:per_configuration three-body coverage: {'LiF': [99.95, 99.7752]}
+INFO:logger:per_configuration final selected_count: {'LiF': 7}
+INFO:logger:num of select_num_mean_pre_sample:5, num of select_num_AEE_sample:3, num of repetition:1, total_num:7
+a=3;b=12;c=1
+body_two_data_base_distribution_time: 0.3665156364440918
+body_two_md_extract_and_type_coverage_rate_time: 1.0475504398345947
+body_three_data_base_distribution_time: 0.9605693817138672
+body_three_md_extract_and_type_coverage_rate_time: 0.8279285430908203
+num of ori_classes:12, num of current_classes (some type_atom have a weight of 0, delete these structure classes): 16
+a=4;b=16;c=-1
+a=4;b=16;c=1
+  0%|          | 0/5 [00:00<?, ?it/s] 40%|████      | 2/5 [00:00<00:00, 17.72it/s]100%|██████████| 5/5 [00:00<00:00, 31.36it/s]
+Job <3547155> is submitted to queue <33>.
+Job <3547156> is submitted to queue <33>.
+Job <3547157> is submitted to queue <33>.
+Job <3547158> is submitted to queue <33>.
+Job <3547159> is submitted to queue <33>.
+INFO:logger:The 7 structures are divided into 5 dft calculation tasks to be submitted
+INFO:logger:In the process of checking whether the SCF calculation is complete......
+INFO:logger:All scf calculations have been completed
+  0%|          | 0/5 [00:00<?, ?it/s]100%|██████████| 5/5 [00:00<00:00, 128.52it/s]
+INFO:logger:Active learning continues: gen_0 | abacus_completed_number:7 | Successful_collection_structure/scf_convergent_number:7 | force_threshold_number(20):7
+INFO:logger:main_0 | gen_1: start
+Job <3547160> is submitted to queue <33>.
+INFO:logger:mlp_0 has been submitted
+INFO:logger:All training_mlp tasks have been completed
+Job <3547162> is submitted to queue <33>.
+INFO:logger:LiF: Task is submitted
+INFO:logger:All MD calculations have been completed
+INFO:logger:Complete coding process.
+INFO:logger:per_configuration mean_descriptor coverage: {'LiF': [99.9126]}
+INFO:logger:per_configuration mean_descriptor selected_count: {'LiF': 2}
+INFO:logger:per_configuration two-body coverage: {'LiF': [99.9001, 99.9001]}
+INFO:logger:per_configuration three-body coverage: {'LiF': [99.9542, 100.0]}
+INFO:logger:per_configuration final selected_count: {'LiF': 2}
+INFO:logger:num of select_num_mean_pre_sample:2, num of select_num_AEE_sample:1, num of repetition:1, total_num:2
+a=2;b=8;c=1
+body_two_data_base_distribution_time: 0.3633434772491455
+body_two_md_extract_and_type_coverage_rate_time: 0.7817058563232422
+body_three_data_base_distribution_time: 0.9995639324188232
+body_three_md_extract_and_type_coverage_rate_time: 0.8155014514923096
+num of ori_classes:4, num of current_classes (some type_atom have a weight of 0, delete these structure classes): 6
+a=2;b=8;c=-1
+a=2;b=8;c=1
+  0%|          | 0/2 [00:00<?, ?it/s]100%|██████████| 2/2 [00:00<00:00, 33.60it/s]
+Job <3547164> is submitted to queue <33>.
+Job <3547165> is submitted to queue <33>.
+INFO:logger:The 2 structures are divided into 2 dft calculation tasks to be submitted
+INFO:logger:In the process of checking whether the SCF calculation is complete......
+INFO:logger:All scf calculations have been completed
+  0%|          | 0/2 [00:00<?, ?it/s]100%|██████████| 2/2 [00:00<00:00, 189.63it/s]
+INFO:logger:Active learning continues: gen_1 | abacus_completed_number:2 | Successful_collection_structure/scf_convergent_number:2 | force_threshold_number(20):2
+INFO:logger:main_0 | gen_2: start
+Job <3547166> is submitted to queue <33>.
+INFO:logger:mlp_0 has been submitted
+INFO:logger:All training_mlp tasks have been completed
+Job <3547168> is submitted to queue <33>.
+INFO:logger:LiF: Task is submitted
+INFO:logger:All MD calculations have been completed
+INFO:logger:Complete coding process.
+INFO:logger:per_configuration mean_descriptor coverage: {'LiF': [99.9875]}
+INFO:logger:per_configuration mean_descriptor selected_count: {'LiF': 0}
+INFO:logger:per_configuration two-body coverage: {'LiF': [100.0, 100.0]}
+INFO:logger:per_configuration three-body coverage: {'LiF': [99.9126, 99.9792]}
+INFO:logger:per_configuration final selected_count: {'LiF': 2}
+INFO:logger:num of select_num_mean_pre_sample:0, num of select_num_AEE_sample:2, num of repetition:0, total_num:2
+a=0;b=1;c=1
+body_two_data_base_distribution_time: 0.3813486099243164
+body_two_md_extract_and_type_coverage_rate_time: 0.8168909549713135
+body_three_data_base_distribution_time: 1.0407116413116455
+body_three_md_extract_and_type_coverage_rate_time: 0.8171572685241699
+num of ori_classes:2, num of current_classes (some type_atom have a weight of 0, delete these structure classes): 3
+a=2;b=8;c=1
+a=2;b=8;c=1
+  0%|          | 0/2 [00:00<?, ?it/s]100%|██████████| 2/2 [00:00<00:00, 37.52it/s]
+Job <3547170> is submitted to queue <33>.
+Job <3547171> is submitted to queue <33>.
+INFO:logger:The 2 structures are divided into 2 dft calculation tasks to be submitted
+INFO:logger:In the process of checking whether the SCF calculation is complete......
+INFO:logger:All scf calculations have been completed
+  0%|          | 0/2 [00:00<?, ?it/s]100%|██████████| 2/2 [00:00<00:00, 166.63it/s]
+INFO:logger:Active learning continues: gen_2 | abacus_completed_number:2 | Successful_collection_structure/scf_convergent_number:2 | force_threshold_number(20):2
+INFO:logger:main_0 | gen_3: start
+Job <3547172> is submitted to queue <33>.
+INFO:logger:mlp_0 has been submitted
+INFO:logger:All training_mlp tasks have been completed
+Job <3547174> is submitted to queue <33>.
+INFO:logger:LiF: Task is submitted
+INFO:logger:All MD calculations have been completed
+INFO:logger:Complete coding process.
+INFO:logger:per_configuration mean_descriptor coverage: {'LiF': [99.9813]}
+INFO:logger:per_configuration mean_descriptor selected_count: {'LiF': 0}
+INFO:logger:per_configuration two-body coverage: {'LiF': [100.0, 100.0]}
+INFO:logger:per_configuration three-body coverage: {'LiF': [99.9958, 99.9875]}
+INFO:logger:per_configuration final selected_count: {'LiF': 0}
+INFO:logger:num of select_num_mean_pre_sample:0, num of select_num_AEE_sample:0, num of repetition:0, total_num:0
+INFO:logger:No structures were selected for SCF. The active learning loop ends
+a=0;b=1;c=1
+body_two_data_base_distribution_time: 0.39549875259399414
+body_two_md_extract_and_type_coverage_rate_time: 0.8183984756469727
+body_three_data_base_distribution_time: 1.0246939659118652
+body_three_md_extract_and_type_coverage_rate_time: 0.9930353164672852
+num of ori_classes:0, num of current_classes (some type_atom have a weight of 0, delete these structure classes): 2
+a=0;b=1;c=1
+a=0;b=1;c=1
+INFO:logger:main_1 | gen_0: start
+Job <3547175> is submitted to queue <33>.
+INFO:logger:LiF: Task is submitted
+INFO:logger:All MD calculations have been completed
+INFO:logger:Complete coding process.
+INFO:logger:per_configuration mean_descriptor coverage: {'LiF': [99.9563]}
+INFO:logger:per_configuration mean_descriptor selected_count: {'LiF': 0}
+INFO:logger:per_configuration two-body coverage: {'LiF': [99.95, 99.9376]}
+INFO:logger:per_configuration three-body coverage: {'LiF': [99.975, 99.9542]}
+INFO:logger:per_configuration final selected_count: {'LiF': 1}
+INFO:logger:num of select_num_mean_pre_sample:0, num of select_num_AEE_sample:1, num of repetition:0, total_num:1
+a=0;b=1;c=2
+body_two_data_base_distribution_time: 0.3885774612426758
+body_two_md_extract_and_type_coverage_rate_time: 0.7914423942565918
+body_three_data_base_distribution_time: 0.9737024307250977
+body_three_md_extract_and_type_coverage_rate_time: 0.8289439678192139
+num of ori_classes:2, num of current_classes (some type_atom have a weight of 0, delete these structure classes): 10
+a=2;b=8;c=-1
+a=2;b=8;c=-1
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:00<00:00, 24.69it/s]
+Job <3547176> is submitted to queue <33>.
+INFO:logger:The 1 structures are divided into 1 dft calculation tasks to be submitted
+INFO:logger:In the process of checking whether the SCF calculation is complete......
+INFO:logger:All scf calculations have been completed
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:00<00:00, 126.87it/s]
+INFO:logger:Active learning continues: gen_0 | abacus_completed_number:1 | Successful_collection_structure/scf_convergent_number:1 | force_threshold_number(20):1
+INFO:logger:main_1 | gen_1: start
+Job <3547177> is submitted to queue <33>.
+INFO:logger:mlp_0 has been submitted
+INFO:logger:All training_mlp tasks have been completed
+Job <3547178> is submitted to queue <33>.
+INFO:logger:LiF: Task is submitted
+INFO:logger:All MD calculations have been completed
+INFO:logger:Complete coding process.
+INFO:logger:per_configuration mean_descriptor coverage: {'LiF': [99.9875]}
+INFO:logger:per_configuration mean_descriptor selected_count: {'LiF': 0}
+INFO:logger:per_configuration two-body coverage: {'LiF': [100.0, 100.0]}
+INFO:logger:per_configuration three-body coverage: {'LiF': [100.0, 99.9833]}
+INFO:logger:per_configuration final selected_count: {'LiF': 0}
+INFO:logger:num of select_num_mean_pre_sample:0, num of select_num_AEE_sample:0, num of repetition:0, total_num:0
+INFO:logger:No structures were selected for SCF. The active learning loop ends
+a=0;b=1;c=1
+body_two_data_base_distribution_time: 0.29920125007629395
+body_two_md_extract_and_type_coverage_rate_time: 0.9216866493225098
+body_three_data_base_distribution_time: 0.9221401214599609
+body_three_md_extract_and_type_coverage_rate_time: 0.9493825435638428
+num of ori_classes:0, num of current_classes (some type_atom have a weight of 0, delete these structure classes): 3
+a=0;b=1;c=1
+a=0;b=1;c=1
+{0: 'Li', 1: 'F'}

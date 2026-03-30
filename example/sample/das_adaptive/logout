@@ -1,0 +1,159 @@
+INFO:logger:main_0 | gen_0: start
+Job <3547215> is submitted to queue <33>.
+INFO:logger:mlp_2 has been submitted
+Job <3547216> is submitted to queue <33>.
+INFO:logger:mlp_1 has been submitted
+Job <3547217> is submitted to queue <33>.
+INFO:logger:mlp_0 has been submitted
+INFO:logger:All training_mlp tasks have been completed
+Job <3547218> is submitted to queue <33>.
+INFO:logger:LiF: Task is submitted
+INFO:logger:All MD calculations have been completed
+INFO:logger:The ambiguity threshold: 0.01
+  0%|          | 0/1 [00:00<?, ?it/s]INFO:logger:LiF/npt/200: According to the ambiguity in the 0.01-0.5 range , 659 structures are selected from 1001 structures. Interval:[0.0, 0.01, 0.2, 0.4, 0.6000000000000001, 0.8, 1.0] Statistical number:[342 659   0   0   0   0]
+100%|██████████| 1/1 [00:04<00:00,  4.85s/it]100%|██████████| 1/1 [00:04<00:00,  4.85s/it]
+INFO:maml.sampling.pca:Selected first 11 PCs, explaining 94.66% variance
+INFO:maml.sampling.clustering:BirchClustering with threshold_init=0.5 and n=5 gives 5 clusters.
+INFO:maml.sampling.stratified_sampling:Finally selected 10 configurations.
+INFO:logger:LiF: selected 10 structures from 659 structures in data by MBTR+Brich.
+MBTR.shape = (659, 150)
+encoder time:13.927066326141357
+DIRECT selected 10 structures from 659 structures in data.
+sample time:1.7849040031433105
+  0%|          | 0/5 [00:00<?, ?it/s] 20%|██        | 1/5 [00:00<00:00,  9.30it/s]100%|██████████| 5/5 [00:00<00:00, 23.74it/s]100%|██████████| 5/5 [00:00<00:00, 21.70it/s]
+Job <3547219> is submitted to queue <33>.
+Job <3547220> is submitted to queue <33>.
+Job <3547221> is submitted to queue <33>.
+Job <3547222> is submitted to queue <33>.
+Job <3547223> is submitted to queue <33>.
+INFO:logger:The 10 structures are divided into 5 dft calculation tasks to be submitted
+INFO:logger:In the process of checking whether the SCF calculation is complete......
+INFO:logger:All scf calculations have been completed
+  0%|          | 0/5 [00:00<?, ?it/s]100%|██████████| 5/5 [00:00<00:00, 54.47it/s]
+INFO:logger:Active learning continues: gen_0 | abacus_completed_number:10 | Successful_collection_structure/scf_convergent_number:10 | force_threshold_number(20):10
+INFO:logger:main_0 | gen_1: start
+Job <3547224> is submitted to queue <33>.
+INFO:logger:mlp_2 has been submitted
+Job <3547225> is submitted to queue <33>.
+INFO:logger:mlp_1 has been submitted
+Job <3547226> is submitted to queue <33>.
+INFO:logger:mlp_0 has been submitted
+INFO:logger:All training_mlp tasks have been completed
+Job <3547227> is submitted to queue <33>.
+INFO:logger:LiF: Task is submitted
+INFO:logger:All MD calculations have been completed
+INFO:logger:The ambiguity threshold: 0.038496828648233714
+  0%|          | 0/1 [00:00<?, ?it/s]INFO:logger:LiF/npt/200: According to the ambiguity in the 0.038-0.5 range , 0 structures are selected from 1001 structures. Interval:[0.0, 0.038, 0.2, 0.4, 0.6000000000000001, 0.8, 1.0] Statistical number:[1001    0    0    0    0    0]
+100%|██████████| 1/1 [00:04<00:00,  4.75s/it]100%|██████████| 1/1 [00:04<00:00,  4.75s/it]
+INFO:logger:The active learning loop ends
+INFO:logger:main_1 | gen_0: start
+Job <3547233> is submitted to queue <33>.
+INFO:logger:LiF: Task is submitted
+INFO:logger:All MD calculations have been completed
+INFO:logger:The ambiguity threshold: 0.01
+  0%|          | 0/1 [00:00<?, ?it/s]INFO:logger:LiF/npt/300: According to the ambiguity in the 0.01-0.5 range , 430 structures are selected from 1001 structures. Interval:[0.0, 0.01, 0.2, 0.4, 0.6000000000000001, 0.8, 1.0] Statistical number:[571 430   0   0   0   0]
+100%|██████████| 1/1 [00:04<00:00,  4.64s/it]100%|██████████| 1/1 [00:04<00:00,  4.64s/it]
+INFO:maml.sampling.pca:Selected first 11 PCs, explaining 94.91% variance
+INFO:maml.sampling.clustering:BirchClustering with threshold_init=0.5 and n=5 gives 5 clusters.
+INFO:maml.sampling.stratified_sampling:Finally selected 8 configurations.
+INFO:logger:LiF: selected 8 structures from 430 structures in data by MBTR+Brich.
+MBTR.shape = (430, 150)
+encoder time:6.879943370819092
+DIRECT selected 8 structures from 430 structures in data.
+sample time:1.2583012580871582
+  0%|          | 0/5 [00:00<?, ?it/s] 60%|██████    | 3/5 [00:00<00:00, 26.09it/s]100%|██████████| 5/5 [00:00<00:00, 34.33it/s]
+Job <3547234> is submitted to queue <33>.
+Job <3547235> is submitted to queue <33>.
+Job <3547236> is submitted to queue <33>.
+Job <3547237> is submitted to queue <33>.
+Job <3547238> is submitted to queue <33>.
+INFO:logger:The 8 structures are divided into 5 dft calculation tasks to be submitted
+INFO:logger:In the process of checking whether the SCF calculation is complete......
+INFO:logger:All scf calculations have been completed
+  0%|          | 0/5 [00:00<?, ?it/s]100%|██████████| 5/5 [00:00<00:00, 82.08it/s]
+INFO:logger:Active learning continues: gen_0 | abacus_completed_number:8 | Successful_collection_structure/scf_convergent_number:8 | force_threshold_number(20):8
+INFO:logger:main_1 | gen_1: start
+Job <3547239> is submitted to queue <33>.
+INFO:logger:mlp_2 has been submitted
+Job <3547240> is submitted to queue <33>.
+INFO:logger:mlp_1 has been submitted
+Job <3547241> is submitted to queue <33>.
+INFO:logger:mlp_0 has been submitted
+INFO:logger:All training_mlp tasks have been completed
+Job <3547243> is submitted to queue <33>.
+INFO:logger:LiF: Task is submitted
+INFO:logger:All MD calculations have been completed
+INFO:logger:The ambiguity threshold: 0.02448558407983476
+  0%|          | 0/1 [00:00<?, ?it/s]INFO:logger:LiF/npt/300: According to the ambiguity in the 0.024-0.5 range , 4 structures are selected from 1001 structures. Interval:[0.0, 0.024, 0.2, 0.4, 0.6000000000000001, 0.8, 1.0] Statistical number:[997   4   0   0   0   0]
+100%|██████████| 1/1 [00:04<00:00,  4.85s/it]100%|██████████| 1/1 [00:04<00:00,  4.85s/it]
+  0%|          | 0/4 [00:00<?, ?it/s]100%|██████████| 4/4 [00:00<00:00, 60.08it/s]
+Job <3547244> is submitted to queue <33>.
+Job <3547245> is submitted to queue <33>.
+Job <3547246> is submitted to queue <33>.
+Job <3547247> is submitted to queue <33>.
+INFO:logger:The 4 structures are divided into 4 dft calculation tasks to be submitted
+INFO:logger:In the process of checking whether the SCF calculation is complete......
+INFO:logger:All scf calculations have been completed
+  0%|          | 0/4 [00:00<?, ?it/s] 75%|███████▌  | 3/4 [00:00<00:00, 29.14it/s]100%|██████████| 4/4 [00:00<00:00, 29.20it/s]
+INFO:logger:Active learning continues: gen_1 | abacus_completed_number:4 | Successful_collection_structure/scf_convergent_number:4 | force_threshold_number(20):4
+INFO:logger:main_1 | gen_2: start
+Job <3547345> is submitted to queue <33>.
+INFO:logger:mlp_2 has been submitted
+Job <3547346> is submitted to queue <33>.
+INFO:logger:mlp_1 has been submitted
+Job <3547347> is submitted to queue <33>.
+INFO:logger:mlp_0 has been submitted
+INFO:logger:All training_mlp tasks have been completed
+Job <3547455> is submitted to queue <33>.
+INFO:logger:LiF: Task is submitted
+INFO:logger:All MD calculations have been completed
+INFO:logger:The ambiguity threshold: 0.02278559224335805
+  0%|          | 0/1 [00:00<?, ?it/s]INFO:logger:LiF/npt/300: According to the ambiguity in the 0.023-0.5 range , 2 structures are selected from 1001 structures. Interval:[0.0, 0.023, 0.2, 0.4, 0.6000000000000001, 0.8, 1.0] Statistical number:[999   2   0   0   0   0]
+100%|██████████| 1/1 [00:04<00:00,  4.67s/it]100%|██████████| 1/1 [00:04<00:00,  4.67s/it]
+  0%|          | 0/2 [00:00<?, ?it/s]100%|██████████| 2/2 [00:00<00:00, 57.31it/s]
+Job <3547460> is submitted to queue <33>.
+Job <3547461> is submitted to queue <33>.
+INFO:logger:The 2 structures are divided into 2 dft calculation tasks to be submitted
+INFO:logger:In the process of checking whether the SCF calculation is complete......
+INFO:logger:All scf calculations have been completed
+  0%|          | 0/2 [00:00<?, ?it/s]100%|██████████| 2/2 [00:00<00:00, 144.30it/s]
+INFO:logger:Active learning continues: gen_2 | abacus_completed_number:2 | Successful_collection_structure/scf_convergent_number:2 | force_threshold_number(20):2
+INFO:logger:main_1 | gen_3: start
+Job <3547463> is submitted to queue <33>.
+INFO:logger:mlp_2 has been submitted
+Job <3547465> is submitted to queue <33>.
+INFO:logger:mlp_1 has been submitted
+Job <3547466> is submitted to queue <33>.
+INFO:logger:mlp_0 has been submitted
+INFO:logger:All training_mlp tasks have been completed
+Job <3547469> is submitted to queue <33>.
+INFO:logger:LiF: Task is submitted
+INFO:logger:All MD calculations have been completed
+WARNING:logger:The ambiguity of different elements is too large,please consider setting bond_hierachy=True.
+INFO:logger:The ambiguity threshold: 0.02769155956435909
+  0%|          | 0/1 [00:00<?, ?it/s]INFO:logger:LiF/npt/300: According to the ambiguity in the 0.028-0.5 range , 1 structures are selected from 1001 structures. Interval:[0.0, 0.028, 0.2, 0.4, 0.6000000000000001, 0.8, 1.0] Statistical number:[1000    1    0    0    0    0]
+100%|██████████| 1/1 [00:04<00:00,  4.67s/it]100%|██████████| 1/1 [00:04<00:00,  4.67s/it]
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:00<00:00, 50.05it/s]
+Job <3547471> is submitted to queue <33>.
+INFO:logger:The 1 structures are divided into 1 dft calculation tasks to be submitted
+INFO:logger:In the process of checking whether the SCF calculation is complete......
+INFO:logger:All scf calculations have been completed
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:00<00:00, 158.65it/s]
+INFO:logger:Active learning continues: gen_3 | abacus_completed_number:1 | Successful_collection_structure/scf_convergent_number:1 | force_threshold_number(20):1
+INFO:logger:main_1 | gen_4: start
+Job <3547473> is submitted to queue <33>.
+INFO:logger:mlp_2 has been submitted
+Job <3547474> is submitted to queue <33>.
+INFO:logger:mlp_1 has been submitted
+Job <3547475> is submitted to queue <33>.
+INFO:logger:mlp_0 has been submitted
+INFO:logger:All training_mlp tasks have been completed
+Job <3547478> is submitted to queue <33>.
+INFO:logger:LiF: Task is submitted
+INFO:logger:All MD calculations have been completed
+WARNING:logger:The ambiguity of different elements is too large,please consider setting bond_hierachy=True.
+INFO:logger:The ambiguity threshold: 0.033907838645819866
+  0%|          | 0/1 [00:00<?, ?it/s]INFO:logger:LiF/npt/300: According to the ambiguity in the 0.034-0.5 range , 0 structures are selected from 1001 structures. Interval:[0.0, 0.034, 0.2, 0.4, 0.6000000000000001, 0.8, 1.0] Statistical number:[1001    0    0    0    0    0]
+100%|██████████| 1/1 [00:04<00:00,  4.74s/it]100%|██████████| 1/1 [00:04<00:00,  4.74s/it]
+INFO:logger:The active learning loop ends
+{0: 'Li', 1: 'F'}

@@ -1,0 +1,114 @@
+INFO:logger:main_0 | gen_0: start
+Job <3547479> is submitted to queue <33>.
+INFO:logger:mlp_0 has been submitted
+INFO:logger:All training_mlp tasks have been completed
+Job <3547482> is submitted to queue <33>.
+INFO:logger:LiF: Task is submitted
+INFO:logger:All MD calculations have been completed
+INFO:logger:Complete coding process.
+INFO:logger:mean_descriptor pre-sampling process. The number of classes:[25] The number of stru for all classes:[12] body_min_cover_stru:[5] type_coverage_rate:[[99.6441]] max_min_freq: [9, 1]
+INFO:logger:num of select stru [5, 5]
+INFO:logger:Complete the ocbf_sampling process. The number of classes:[8, 28] The number of stru for all classes:[5, 20] body_min_cover_stru:[2, 7] type_coverage_rate:[[99.7128, 99.6254], [99.6795, 99.7336]] max_min_freq: [41, 1]
+INFO:logger:num of select stru [7, 7]
+INFO:logger:num of select_num_mean_pre_sample:5, num of select_num_AEE_sample:7, num of repetition:3, total_num:9
+a=3;b=12;c=1
+body_two_data_base_distribution_time: 0.3824307918548584
+body_two_md_extract_time: 0.009020090103149414
+body_two_type_coverage_rate_time: 0.8975529670715332
+body_three_data_base_distribution_time: 1.073624849319458
+body_three_md_extract_time: 0.020681381225585938
+body_three_type_coverage_rate_time: 0.8685441017150879
+num of ori_classes:36, num of current_classes (some type_atom have a weight of 0, delete these structure classes): 36
+a=3;b=12;c=1
+a=3;b=12;c=1
+  0%|          | 0/5 [00:00<?, ?it/s] 40%|████      | 2/5 [00:00<00:00, 17.95it/s]100%|██████████| 5/5 [00:00<00:00, 26.69it/s]
+Job <3547484> is submitted to queue <33>.
+Job <3547485> is submitted to queue <33>.
+Job <3547486> is submitted to queue <33>.
+Job <3547487> is submitted to queue <33>.
+Job <3547488> is submitted to queue <33>.
+INFO:logger:The 9 structures are divided into 5 dft calculation tasks to be submitted
+INFO:logger:In the process of checking whether the SCF calculation is complete......
+INFO:logger:All scf calculations have been completed
+  0%|          | 0/5 [00:00<?, ?it/s]100%|██████████| 5/5 [00:00<00:00, 103.75it/s]
+INFO:logger:Active learning continues: gen_0 | abacus_completed_number:9 | Successful_collection_structure/scf_convergent_number:9 | force_threshold_number(20):9
+INFO:logger:main_0 | gen_1: start
+Job <3547490> is submitted to queue <33>.
+INFO:logger:mlp_0 has been submitted
+INFO:logger:All training_mlp tasks have been completed
+Job <3547492> is submitted to queue <33>.
+INFO:logger:LiF: Task is submitted
+INFO:logger:All MD calculations have been completed
+INFO:logger:Complete coding process.
+INFO:logger:mean_descriptor pre-sampling process. The number of classes:[1] The number of stru for all classes:[1] body_min_cover_stru:[1] type_coverage_rate:[[99.9938]] max_min_freq: [1, 1]
+INFO:logger:num of select stru [1, 1]
+INFO:logger:Complete the ocbf_sampling process. The number of classes:[0, 0] The number of stru for all classes:[0, 0] body_min_cover_stru:[0, 0] type_coverage_rate:[[100.0, 100.0], [100.0, 100.0]] max_min_freq: [NaN, NaN]
+INFO:logger:num of select stru [0, 0]
+INFO:logger:num of select_num_mean_pre_sample:0, num of select_num_AEE_sample:0, num of repetition:0, total_num:0
+INFO:logger:No structures were selected for SCF. The active learning loop ends
+a=0;b=1;c=1
+body_two_data_base_distribution_time: 0.40461206436157227
+body_two_md_extract_time: 0.007683753967285156
+body_two_type_coverage_rate_time: 0.8474068641662598
+body_three_data_base_distribution_time: 1.0758814811706543
+body_three_md_extract_time: 0.015499591827392578
+body_three_type_coverage_rate_time: 0.8801839351654053
+num of ori_classes:0, num of current_classes (some type_atom have a weight of 0, delete these structure classes): 0
+a=0;b=1;c=1
+a=0;b=1;c=1
+INFO:logger:main_1 | gen_0: start
+Job <3547496> is submitted to queue <33>.
+INFO:logger:LiF: Task is submitted
+INFO:logger:All MD calculations have been completed
+INFO:logger:Complete coding process.
+INFO:logger:mean_descriptor pre-sampling process. The number of classes:[1] The number of stru for all classes:[1] body_min_cover_stru:[1] type_coverage_rate:[[99.9938]] max_min_freq: [1, 1]
+INFO:logger:num of select stru [1, 1]
+INFO:logger:Complete the ocbf_sampling process. The number of classes:[0, 10] The number of stru for all classes:[0, 11] body_min_cover_stru:[0, 8] type_coverage_rate:[[100.0, 100.0], [99.9958, 99.9417]] max_min_freq: [3, 1]
+INFO:logger:num of select stru [7, 7]
+INFO:logger:num of select_num_mean_pre_sample:0, num of select_num_AEE_sample:7, num of repetition:0, total_num:7
+a=0;b=1;c=1
+body_two_data_base_distribution_time: 0.36741209030151367
+body_two_md_extract_time: 0.007875680923461914
+body_two_type_coverage_rate_time: 0.8579213619232178
+body_three_data_base_distribution_time: 0.9804039001464844
+body_three_md_extract_time: 0.016957998275756836
+body_three_type_coverage_rate_time: 0.837104082107544
+num of ori_classes:9, num of current_classes (some type_atom have a weight of 0, delete these structure classes): 10
+a=2;b=8;c=1
+a=2;b=8;c=1
+  0%|          | 0/5 [00:00<?, ?it/s]100%|██████████| 5/5 [00:00<00:00, 43.89it/s]100%|██████████| 5/5 [00:00<00:00, 43.81it/s]
+Job <3547498> is submitted to queue <33>.
+Job <3547499> is submitted to queue <33>.
+Job <3547500> is submitted to queue <33>.
+Job <3547501> is submitted to queue <33>.
+Job <3547502> is submitted to queue <33>.
+INFO:logger:The 7 structures are divided into 5 dft calculation tasks to be submitted
+INFO:logger:In the process of checking whether the SCF calculation is complete......
+INFO:logger:All scf calculations have been completed
+  0%|          | 0/5 [00:00<?, ?it/s]100%|██████████| 5/5 [00:00<00:00, 130.96it/s]
+INFO:logger:Active learning continues: gen_0 | abacus_completed_number:7 | Successful_collection_structure/scf_convergent_number:7 | force_threshold_number(20):7
+INFO:logger:main_1 | gen_1: start
+Job <3547503> is submitted to queue <33>.
+INFO:logger:mlp_0 has been submitted
+INFO:logger:All training_mlp tasks have been completed
+Job <3547516> is submitted to queue <33>.
+INFO:logger:LiF: Task is submitted
+INFO:logger:All MD calculations have been completed
+INFO:logger:Complete coding process.
+INFO:logger:mean_descriptor pre-sampling process. The number of classes:[1] The number of stru for all classes:[2] body_min_cover_stru:[1] type_coverage_rate:[[99.9938]] max_min_freq: [1, 1]
+INFO:logger:num of select stru [1, 1]
+INFO:logger:Complete the ocbf_sampling process. The number of classes:[0, 8] The number of stru for all classes:[0, 8] body_min_cover_stru:[0, 6] type_coverage_rate:[[100.0, 100.0], [99.9833, 99.9917]] max_min_freq: [NaN, NaN]
+INFO:logger:num of select stru [0, 0]
+INFO:logger:num of select_num_mean_pre_sample:0, num of select_num_AEE_sample:0, num of repetition:0, total_num:0
+INFO:logger:No structures were selected for SCF. The active learning loop ends
+a=0;b=1;c=1
+body_two_data_base_distribution_time: 0.44927406311035156
+body_two_md_extract_time: 0.00785684585571289
+body_two_type_coverage_rate_time: 0.837099552154541
+body_three_data_base_distribution_time: 0.845787763595581
+body_three_md_extract_time: 0.016511201858520508
+body_three_type_coverage_rate_time: 0.9403538703918457
+num of ori_classes:0, num of current_classes (some type_atom have a weight of 0, delete these structure classes): 8
+a=0;b=1;c=1
+a=0;b=1;c=1
+{0: 'Li', 1: 'F'}

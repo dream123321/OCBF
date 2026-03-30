@@ -1,0 +1,127 @@
+{
+  // Working directory for generated main_*/gen_* outputs.
+  "run_dir": ".",
+
+  "dataset": {
+    // Input xyz/extxyz dataset used to initialize train.cfg.
+    "xyz_input": "./abacus_LiF_npt.xyz",
+    // Template directory for engine input files such as INPUT/INCAR/cp2k.inp/lmp_in.py.
+    "init_source_dir": "./init",
+    // Optional label written to exported all_sample_data.xyz.
+    "all_label": "LiF"
+  },
+
+  "workflow": {
+    // Main loop schedule. Each outer item corresponds to one main_i.
+    "main_loop_npt": [[200], [300]],
+    "main_loop_nvt": null,
+    // "full-automatic" or "semi-automatic".
+    "mode": "full-automatic",
+    "sleep_time": 10,
+    // Maximum generation count per main loop. If max_gen=10, valid gens are gen_0 ... gen_9.
+    "max_gen": 10,
+    "output_xyz": true,
+    "output_xyz_name": "all_sample_data.xyz"
+  },
+
+  "parameter": {
+    "mlp_nums": 3,
+    "size": "(1, 1, 1)",
+    // Sort the inferred element list by atomic number before mapping species ids.
+    // Default is true when omitted.
+    "sort_ele": true,
+    "nvt_lattice_scaling_factor": [1],
+    "das_ambiguity": true,
+    "af_default": 0.01,
+    "af_limit": 0.2,
+    "af_failed": 0.5,
+    "over_fitting_factor": 1.1,
+    "af_adaptive": null,
+    "threshold_low": 0.08,
+    "threshold_high": 0.3,
+    "select_stru_num": null,
+    "end": 1,
+    "num_elements": 6,
+    "sample": {
+      "n": 5,
+      "cluster_threshold_init": 0.5,
+      "k": 2,
+      "clustering_by_ambiguity": true
+    },
+    "mlp_encode_model": true,
+    // Number of parallel workers used when encoding train.cfg into database.out.
+    // This only affects the database descriptor encoding step in encoded sampling.
+    "encoding_cores": 2,
+    "iw_method": "Freedman_Diaconis",
+    "iw": 0.01,
+    // Width coefficient for Freedman-Diaconis interval widths.
+    // > 1.0 gives wider bins; < 1.0 gives narrower bins.
+    "iw_scale": 1.0,
+    // Body terms included in descriptor coverage statistics.
+    // Typical choices are ["two", "three"] or ["two", "three", "four"].
+    // Default is ["two", "three"] when omitted.
+    "body_list": ["two", "three"],
+    // Embedded template type. Use "l2k2" or "l2k3".
+    // Default is "l2k2" when omitted.
+    "mtp_type": "l2k2",
+
+    // Each stage corresponds to the same-position budget below.
+    "selection_budget_schedule": [20, 15, 10],
+
+    // Coverage threshold schedule.
+    // Each inner list length must be 1 or equal to the number of elements.
+    // Example with two elements:
+    // [
+    //   [99.5, 99.2],
+    //   [99.9, 99.6],
+    //   [99.95, 99.8]
+    // ]
+    "coverage_threshold_schedule": [99.5, 99.9, 99.95],
+
+    // "mean" or "min".
+    "coverage_rate_method": "mean",
+    // "global" keeps the old behavior.
+    // "per_configuration" computes coverage per configuration separately.
+    // Default is "per_configuration" when omitted.
+    "coverage_calculation_mode": "per_configuration",
+    // Only used when coverage_calculation_mode = "per_configuration".
+    // When true, app.log prints each source configuration's coverage and
+    // the number of structures finally selected from each source configuration.
+    "report_per_configuration_details": false,
+    "dft": {
+      "calc_dir_num": 5,
+      "force_threshold": 20
+    }
+  },
+
+  "scheduler": {
+    "train_sus_queue": 33,
+    "train_sus_cores": 40,
+    "train_sus_ptile": 40,
+    "sus2_mlp_exe": "/work/phy-huangj/app/SUS2-MLIP/bin/mlp-sus2",
+    "original_command": "mpirun /work/phy-huangj/app/SUS2-MLIP/bin/mlp-sus2 train hyx.mtp ../train.cfg  --stdd-weight=0.0   --std-weight=0.0000   --max-iter=2000  --curr-pot-name=",
+    "subsequent_command": "mpirun /work/phy-huangj/app/SUS2-MLIP/bin/mlp-sus2 train hyx.mtp ../train.cfg   --init-params=same --do-samp=false  --stdd-weight=0.0   --std-weight=0.0000   --max-iter=1000  --curr-pot-name=",
+    "lmp_queue": 33,
+    "lmp_cores": 40,
+    "lmp_ptile": 40,
+    "lmp_exe": "mpirun -machinefile $LSB_DJOB_HOSTFILE -np $NP /work/phy-huangj/app/interface-lammps-mlip-2/lmp_intel_cpu_intelmpi",
+    "scf_queue": 33,
+    "scf_cores": 40,
+    "scf_ptile": 40,
+    // DFT engine: "abacus", "vasp", "cp2k", or "qe".
+    "scf_cal_engine": "abacus",
+    // Use "bsub" or "lsf" for LSF, "sbatch" or "slurm" for Slurm.
+    "submission_backend": "bsub",
+    // Shell snippet used to prepare the DFT runtime environment.
+    // Typical content: module loads, PATH exports, conda activate, etc.
+    "dft_env": "module load compiler/2022.1.0 mpi/2021.6.0 mkl/2022.2.0
+export PATH=/work/phy-huangj/apps/il/abacus/3.6.5/bin:$PATH",
+    // Actual DFT command to run inside each SCF task directory.
+    // Examples:
+    //   "mpirun -n 40 abacus"
+    //   "mpirun -n 40 pw.x -in qe.in"
+    //   "mpirun -n 40 cp2k.popt -i cp2k.inp"
+    //   "mpirun -n 40 vasp_std"
+    "dft_command": "mpirun -n 40 abacus"
+  }
+}

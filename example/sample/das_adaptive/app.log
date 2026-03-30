@@ -1,0 +1,85 @@
+2026-03-29 23:20:30,220 INFO: main_0 | gen_0: start
+2026-03-29 23:20:30,324 INFO: mlp_2 has been submitted
+2026-03-29 23:20:30,389 INFO: mlp_1 has been submitted
+2026-03-29 23:20:30,427 INFO: mlp_0 has been submitted
+2026-03-29 23:22:30,659 INFO: All training_mlp tasks have been completed
+2026-03-29 23:22:31,023 INFO: LiF: Task is submitted
+2026-03-29 23:23:41,214 INFO: All MD calculations have been completed
+2026-03-29 23:23:41,239 INFO: The ambiguity threshold: 0.01
+2026-03-29 23:23:46,115 INFO: LiF/npt/200: According to the ambiguity in the 0.01-0.5 range , 659 structures are selected from 1001 structures. Interval:[0.0, 0.01, 0.2, 0.4, 0.6000000000000001, 0.8, 1.0] Statistical number:[342 659   0   0   0   0]
+2026-03-29 23:24:02,379 INFO: LiF: selected 10 structures from 659 structures in data by MBTR+Brich.
+2026-03-29 23:24:02,874 INFO: The 10 structures are divided into 5 dft calculation tasks to be submitted
+2026-03-29 23:24:02,874 INFO: In the process of checking whether the SCF calculation is complete......
+2026-03-29 23:24:43,373 INFO: All scf calculations have been completed
+2026-03-29 23:24:43,486 INFO: Active learning continues: gen_0 | abacus_completed_number:10 | Successful_collection_structure/scf_convergent_number:10 | force_threshold_number(20):10
+2026-03-29 23:24:48,748 INFO: main_0 | gen_1: start
+2026-03-29 23:24:48,865 INFO: mlp_2 has been submitted
+2026-03-29 23:24:48,901 INFO: mlp_1 has been submitted
+2026-03-29 23:24:48,958 INFO: mlp_0 has been submitted
+2026-03-29 23:25:49,154 INFO: All training_mlp tasks have been completed
+2026-03-29 23:25:49,376 INFO: LiF: Task is submitted
+2026-03-29 23:26:39,513 INFO: All MD calculations have been completed
+2026-03-29 23:26:39,651 INFO: The ambiguity threshold: 0.038496828648233714
+2026-03-29 23:26:44,406 INFO: LiF/npt/200: According to the ambiguity in the 0.038-0.5 range , 0 structures are selected from 1001 structures. Interval:[0.0, 0.038, 0.2, 0.4, 0.6000000000000001, 0.8, 1.0] Statistical number:[1001    0    0    0    0    0]
+2026-03-29 23:26:44,417 INFO: The active learning loop ends
+2026-03-29 23:26:49,068 INFO: main_1 | gen_0: start
+2026-03-29 23:26:49,253 INFO: LiF: Task is submitted
+2026-03-29 23:27:39,354 INFO: All MD calculations have been completed
+2026-03-29 23:27:39,359 INFO: The ambiguity threshold: 0.01
+2026-03-29 23:27:44,007 INFO: LiF/npt/300: According to the ambiguity in the 0.01-0.5 range , 430 structures are selected from 1001 structures. Interval:[0.0, 0.01, 0.2, 0.4, 0.6000000000000001, 0.8, 1.0] Statistical number:[571 430   0   0   0   0]
+2026-03-29 23:27:52,512 INFO: LiF: selected 8 structures from 430 structures in data by MBTR+Brich.
+2026-03-29 23:27:52,912 INFO: The 8 structures are divided into 5 dft calculation tasks to be submitted
+2026-03-29 23:27:52,912 INFO: In the process of checking whether the SCF calculation is complete......
+2026-03-29 23:28:33,485 INFO: All scf calculations have been completed
+2026-03-29 23:28:33,565 INFO: Active learning continues: gen_0 | abacus_completed_number:8 | Successful_collection_structure/scf_convergent_number:8 | force_threshold_number(20):8
+2026-03-29 23:28:38,351 INFO: main_1 | gen_1: start
+2026-03-29 23:28:38,563 INFO: mlp_2 has been submitted
+2026-03-29 23:28:38,608 INFO: mlp_1 has been submitted
+2026-03-29 23:28:38,642 INFO: mlp_0 has been submitted
+2026-03-29 23:29:48,906 INFO: All training_mlp tasks have been completed
+2026-03-29 23:29:49,098 INFO: LiF: Task is submitted
+2026-03-29 23:30:39,249 INFO: All MD calculations have been completed
+2026-03-29 23:30:39,328 INFO: The ambiguity threshold: 0.02448558407983476
+2026-03-29 23:30:44,178 INFO: LiF/npt/300: According to the ambiguity in the 0.024-0.5 range , 4 structures are selected from 1001 structures. Interval:[0.0, 0.024, 0.2, 0.4, 0.6000000000000001, 0.8, 1.0] Statistical number:[997   4   0   0   0   0]
+2026-03-29 23:30:44,554 INFO: The 4 structures are divided into 4 dft calculation tasks to be submitted
+2026-03-29 23:30:44,557 INFO: In the process of checking whether the SCF calculation is complete......
+2026-03-29 23:31:14,728 INFO: All scf calculations have been completed
+2026-03-29 23:31:14,914 INFO: Active learning continues: gen_1 | abacus_completed_number:4 | Successful_collection_structure/scf_convergent_number:4 | force_threshold_number(20):4
+2026-03-29 23:31:19,646 INFO: main_1 | gen_2: start
+2026-03-29 23:31:19,872 INFO: mlp_2 has been submitted
+2026-03-29 23:31:19,913 INFO: mlp_1 has been submitted
+2026-03-29 23:31:19,955 INFO: mlp_0 has been submitted
+2026-03-29 23:33:30,164 INFO: All training_mlp tasks have been completed
+2026-03-29 23:33:30,372 INFO: LiF: Task is submitted
+2026-03-29 23:34:20,500 INFO: All MD calculations have been completed
+2026-03-29 23:34:20,554 INFO: The ambiguity threshold: 0.02278559224335805
+2026-03-29 23:34:25,227 INFO: LiF/npt/300: According to the ambiguity in the 0.023-0.5 range , 2 structures are selected from 1001 structures. Interval:[0.0, 0.023, 0.2, 0.4, 0.6000000000000001, 0.8, 1.0] Statistical number:[999   2   0   0   0   0]
+2026-03-29 23:34:25,428 INFO: The 2 structures are divided into 2 dft calculation tasks to be submitted
+2026-03-29 23:34:25,428 INFO: In the process of checking whether the SCF calculation is complete......
+2026-03-29 23:34:45,509 INFO: All scf calculations have been completed
+2026-03-29 23:34:45,531 INFO: Active learning continues: gen_2 | abacus_completed_number:2 | Successful_collection_structure/scf_convergent_number:2 | force_threshold_number(20):2
+2026-03-29 23:34:50,182 INFO: main_1 | gen_3: start
+2026-03-29 23:34:50,276 INFO: mlp_2 has been submitted
+2026-03-29 23:34:50,316 INFO: mlp_1 has been submitted
+2026-03-29 23:34:50,396 INFO: mlp_0 has been submitted
+2026-03-29 23:36:10,597 INFO: All training_mlp tasks have been completed
+2026-03-29 23:36:10,725 INFO: LiF: Task is submitted
+2026-03-29 23:37:00,878 INFO: All MD calculations have been completed
+2026-03-29 23:37:00,921 WARNING: The ambiguity of different elements is too large,please consider setting bond_hierachy=True.
+2026-03-29 23:37:00,921 INFO: The ambiguity threshold: 0.02769155956435909
+2026-03-29 23:37:05,602 INFO: LiF/npt/300: According to the ambiguity in the 0.028-0.5 range , 1 structures are selected from 1001 structures. Interval:[0.0, 0.028, 0.2, 0.4, 0.6000000000000001, 0.8, 1.0] Statistical number:[1000    1    0    0    0    0]
+2026-03-29 23:37:05,832 INFO: The 1 structures are divided into 1 dft calculation tasks to be submitted
+2026-03-29 23:37:05,833 INFO: In the process of checking whether the SCF calculation is complete......
+2026-03-29 23:37:35,899 INFO: All scf calculations have been completed
+2026-03-29 23:37:35,911 INFO: Active learning continues: gen_3 | abacus_completed_number:1 | Successful_collection_structure/scf_convergent_number:1 | force_threshold_number(20):1
+2026-03-29 23:37:40,380 INFO: main_1 | gen_4: start
+2026-03-29 23:37:40,492 INFO: mlp_2 has been submitted
+2026-03-29 23:37:40,531 INFO: mlp_1 has been submitted
+2026-03-29 23:37:40,573 INFO: mlp_0 has been submitted
+2026-03-29 23:39:00,845 INFO: All training_mlp tasks have been completed
+2026-03-29 23:39:01,148 INFO: LiF: Task is submitted
+2026-03-29 23:39:51,291 INFO: All MD calculations have been completed
+2026-03-29 23:39:51,350 WARNING: The ambiguity of different elements is too large,please consider setting bond_hierachy=True.
+2026-03-29 23:39:51,350 INFO: The ambiguity threshold: 0.033907838645819866
+2026-03-29 23:39:56,089 INFO: LiF/npt/300: According to the ambiguity in the 0.034-0.5 range , 0 structures are selected from 1001 structures. Interval:[0.0, 0.034, 0.2, 0.4, 0.6000000000000001, 0.8, 1.0] Statistical number:[1001    0    0    0    0    0]
+2026-03-29 23:39:56,101 INFO: The active learning loop ends

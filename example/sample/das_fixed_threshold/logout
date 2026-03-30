@@ -1,0 +1,61 @@
+Traceback (most recent call last):
+  File "/work/phy-huangj/hj_mlp/codex/ocb/CSO-AES/v2/example_last/das_fixed_threshold/main.py", line 5, in <module>
+    raise SystemExit(main(argv))
+  File "/work/phy-huangj/hj_mlp/codex/ocb/CSO-AES/v2/cso_aes/ocbf/cli.py", line 123, in main
+    app.run_from_config(args.config, prepare_only=args.prepare_only)
+  File "/work/phy-huangj/hj_mlp/codex/ocb/CSO-AES/v2/cso_aes/ocbf/cli.py", line 14, in run_from_config
+    bootstrapper = WorkspaceBootstrapper(config_path)
+  File "/work/phy-huangj/hj_mlp/codex/ocb/CSO-AES/v2/cso_aes/ocbf/bootstrap.py", line 73, in __init__
+    self.config = load_json_config(self.config_path)
+  File "/work/phy-huangj/hj_mlp/codex/ocb/CSO-AES/v2/cso_aes/ocbf/runtime_config.py", line 100, in load_json_config
+    return json.loads(_strip_json_comments(raw))
+  File "/work/phy-huangj/.conda/envs/AEE_test/lib/python3.10/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+  File "/work/phy-huangj/.conda/envs/AEE_test/lib/python3.10/json/decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+  File "/work/phy-huangj/.conda/envs/AEE_test/lib/python3.10/json/decoder.py", line 353, in raw_decode
+    obj, end = self.scan_once(s, idx)
+json.decoder.JSONDecodeError: Invalid control character at: line 55 column 72 (char 1787)
+INFO:logger:main_0 | gen_0: start
+Job <3547540> is submitted to queue <33>.
+INFO:logger:mlp_2 has been submitted
+Job <3547541> is submitted to queue <33>.
+INFO:logger:mlp_1 has been submitted
+Job <3547542> is submitted to queue <33>.
+INFO:logger:mlp_0 has been submitted
+INFO:logger:All training_mlp tasks have been completed
+Job <3547544> is submitted to queue <33>.
+INFO:logger:LiF: Task is submitted
+INFO:logger:All MD calculations have been completed
+  0%|          | 0/1 [00:00<?, ?it/s]INFO:logger:LiF/npt/200: According to the ambiguity in the 0.08-0.3 range , 0 structures are selected from 1001 structures. Interval:[0.0, 0.08, 0.2, 0.4, 0.6000000000000001, 0.8, 1.0] Statistical number:[1001    0    0    0    0    0]
+100%|██████████| 1/1 [00:04<00:00,  4.55s/it]100%|██████████| 1/1 [00:04<00:00,  4.55s/it]
+INFO:logger:The active learning loop ends
+INFO:logger:main_1 | gen_0: start
+Job <3547546> is submitted to queue <33>.
+INFO:logger:LiF: Task is submitted
+INFO:logger:All MD calculations have been completed
+  0%|          | 0/1 [00:00<?, ?it/s]INFO:logger:LiF/npt/300: According to the ambiguity in the 0.08-0.3 range , 2 structures are selected from 1001 structures. Interval:[0.0, 0.08, 0.2, 0.4, 0.6000000000000001, 0.8, 1.0] Statistical number:[999   2   0   0   0   0]
+100%|██████████| 1/1 [00:04<00:00,  4.68s/it]100%|██████████| 1/1 [00:04<00:00,  4.68s/it]
+  0%|          | 0/2 [00:00<?, ?it/s] 50%|█████     | 1/2 [00:00<00:00,  8.03it/s]100%|██████████| 2/2 [00:00<00:00, 14.25it/s]
+Job <3547547> is submitted to queue <33>.
+Job <3547548> is submitted to queue <33>.
+INFO:logger:The 2 structures are divided into 2 dft calculation tasks to be submitted
+INFO:logger:In the process of checking whether the SCF calculation is complete......
+INFO:logger:All scf calculations have been completed
+  0%|          | 0/2 [00:00<?, ?it/s]100%|██████████| 2/2 [00:00<00:00, 143.66it/s]
+INFO:logger:Active learning continues: gen_0 | abacus_completed_number:2 | Successful_collection_structure/scf_convergent_number:2 | force_threshold_number(20):2
+INFO:logger:main_1 | gen_1: start
+Job <3547549> is submitted to queue <33>.
+INFO:logger:mlp_2 has been submitted
+Job <3547550> is submitted to queue <33>.
+INFO:logger:mlp_1 has been submitted
+Job <3547551> is submitted to queue <33>.
+INFO:logger:mlp_0 has been submitted
+INFO:logger:All training_mlp tasks have been completed
+Job <3547552> is submitted to queue <33>.
+INFO:logger:LiF: Task is submitted
+INFO:logger:All MD calculations have been completed
+  0%|          | 0/1 [00:00<?, ?it/s]INFO:logger:LiF/npt/300: According to the ambiguity in the 0.08-0.3 range , 0 structures are selected from 1001 structures. Interval:[0.0, 0.08, 0.2, 0.4, 0.6000000000000001, 0.8, 1.0] Statistical number:[1001    0    0    0    0    0]
+100%|██████████| 1/1 [00:04<00:00,  4.44s/it]100%|██████████| 1/1 [00:04<00:00,  4.44s/it]
+INFO:logger:The active learning loop ends
+{0: 'Li', 1: 'F'}

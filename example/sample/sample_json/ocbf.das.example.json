@@ -1,0 +1,60 @@
+{
+  "run_dir": ".",
+  "dataset": {
+    "xyz_input": "./abacus_LiF_npt.xyz",
+    "init_source_dir": "./init",
+    "all_label": "LiF"
+  },
+  "workflow": {
+    "main_loop_npt": [[200], [300]],
+    "main_loop_nvt": null,
+    "mode": "full-automatic",
+    "sleep_time": 10,
+    "max_gen": 10,
+    "output_xyz": true,
+    "output_xyz_name": "all_sample_data.xyz"
+  },
+  "parameter": {
+    "mlp_nums": 3,
+    "size": "(1, 1, 1)",
+    "sort_ele": true,
+    "nvt_lattice_scaling_factor": [1],
+    "das_ambiguity": true,
+    "af_default": 0.01,
+    "af_limit": 0.2,
+    "af_failed": 0.5,
+    "over_fitting_factor": 1.1,
+    "end": 1,
+    "num_elements": 6,
+    "sample": {
+      "n": 5,
+      "cluster_threshold_init": 0.5,
+      "k": 2,
+      "clustering_by_ambiguity": true
+    },
+    "mlp_encode_model": false,
+    "dft": {
+      "calc_dir_num": 5,
+      "force_threshold": 20
+    }
+  },
+  "scheduler": {
+    "train_sus_queue": 33,
+    "train_sus_cores": 40,
+    "train_sus_ptile": 40,
+    "sus2_mlp_exe": "/work/phy-huangj/app/SUS2-MLIP/bin/mlp-sus2",
+    "original_command": "mpirun /work/phy-huangj/app/SUS2-MLIP/bin/mlp-sus2 train hyx.mtp ../train.cfg --stdd-weight=0.0 --std-weight=0.0000 --max-iter=2000 --curr-pot-name=",
+    "subsequent_command": "mpirun /work/phy-huangj/app/SUS2-MLIP/bin/mlp-sus2 train hyx.mtp ../train.cfg --init-params=same --do-samp=false --stdd-weight=0.0 --std-weight=0.0000 --max-iter=1000 --curr-pot-name=",
+    "lmp_queue": 33,
+    "lmp_cores": 40,
+    "lmp_ptile": 40,
+    "lmp_exe": "mpirun -machinefile $LSB_DJOB_HOSTFILE -np $NP /work/phy-huangj/app/interface-lammps-mlip-2/lmp_intel_cpu_intelmpi",
+    "scf_queue": 33,
+    "scf_cores": 40,
+    "scf_ptile": 40,
+    "scf_cal_engine": "abacus",
+    "submission_backend": "bsub",
+    "dft_env": "module load compiler/2022.1.0 mpi/2021.6.0 mkl/2022.2.0\nexport PATH=/work/phy-huangj/apps/il/abacus/3.6.5/bin:$PATH",
+    "dft_command": "mpirun -n 40 abacus"
+  }
+}
