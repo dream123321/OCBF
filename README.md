@@ -12,7 +12,7 @@ source activate.sh
 bash verify.sh
 ```
 
-if scf_cal_engine = abacus, please  install ase-abacus (pip install git https://gitlab.com/1041176461/ase-abacus.git).  
+The DFT software needs to be installed by yourself. if scf_cal_engine = abacus, please  install ase-abacus (pip install git https://gitlab.com/1041176461/ase-abacus.git).  
 
 ```bash
 cd source/OCBF_stability/example/sample
@@ -46,9 +46,8 @@ python setup.py install
 
 ### 3.2 Build SUS2-MLIP
 
-```bash
 install [SUS2-MLIP](https://github.com/hu-yanxiao/SUS2-MLIP)
-```
+
 
 Expected outputs:
 - `bin/mlp-sus2`
