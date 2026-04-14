@@ -1,0 +1,41 @@
+&CONTROL
+   calculation      = 'scf'
+   verbosity        = 'high'
+   tstress          = .true.
+   tprnfor          = .true.
+   outdir           = './tmp_qe'
+   prefix           = 'qe'
+   pseudo_dir       = '/work/phy-huangj/apps/qe/pseudos/SSSP_1.3.0_PBE_efficiency'
+/
+&SYSTEM
+   ibrav            = 0
+   nat              = 1
+   ntyp             = 1
+   ecutwfc          = 45.0
+   ecutrho          = 360.0
+   occupations      = 'smearing'
+   degauss          = 0.01
+   smearing         = 'gaussian'
+/
+&ELECTRONS
+   conv_thr         = 1.0d-8
+   mixing_beta      = 0.3
+/
+
+ATOMIC_SPECIES
+# This block will be replaced from init/qe_pseudo_map.yaml
+X 1.0 X.UPF
+
+K_POINTS automatic
+# This block will be replaced from init/qe_kpoints.yaml when present
+1 1 1 0 0 0
+
+CELL_PARAMETERS angstrom
+# This block will be replaced for each sampled structure
+1.0 0.0 0.0
+0.0 1.0 0.0
+0.0 0.0 1.0
+
+ATOMIC_POSITIONS angstrom
+# This block will be replaced for each sampled structure
+X 0.0 0.0 0.0
