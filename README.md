@@ -1,6 +1,6 @@
 # OCBF Installation
 
-This file only keeps the installation workflow.
+Optimal Chemical-Bond-level Fine Sampling
 
 ## 1. Recommended: One-Button Deployment Package
 
@@ -10,10 +10,15 @@ cd ocbf_one-button_deployment
 bash install.sh
 source activate.sh
 bash verify.sh
+```
 
+if scf_cal_engine = abacus, please  install ase-abacus (pip install git https://gitlab.com/1041176461/ase-abacus.git).  
+
+```bash
 cd source/OCBF_stability/example/sample
-
+```
 Then modify the submission queue, dft_env and dft_command
+```bash
 ocbf run ocbf.init_dataset.vasp.test.json 
 ```
 
@@ -71,9 +76,9 @@ CC=gcc CXX=g++ python -m pip install .
 ```
 
 ### 3.4 Build LAMMPS Interface
+SUS2-MLIP models can be used in [LAMMPS](https://github.com/lammps/lammps) simulation via the sus2-interface.
 
 ```bash
-SUS2-MLIP models can be used in [LAMMPS](https://github.com/lammps/lammps) simulation via the sus2-interface
 
 tar -zxzf sus2-interface-20260410.tar.gz
 cd /path/to/lammps/src
