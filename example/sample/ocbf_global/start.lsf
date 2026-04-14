@@ -1,5 +1,0 @@
-#!/bin/bash
-source /etc/profile >/dev/null 2>&1
-module load compiler/2022.1.0 mpi/2021.6.0 mkl/2022.1.0 >/dev/null 2>&1
-nohup /work/phy-huangj/.conda/envs/AEE_test/bin/python main.py >> logout 2>&1 &
-echo $! > pid.txt

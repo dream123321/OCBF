@@ -1,3 +1,0 @@
-#!/bin/bash
-nohup python main.py >> logout 2>&1 &
-echo $! >> pid.txt
