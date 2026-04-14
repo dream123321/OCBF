@@ -16,7 +16,7 @@ ocbf -h "View more functions"
 The DFT software needs to be installed by yourself. if scf_cal_engine = abacus, please  install ase-abacus (pip install git https://gitlab.com/1041176461/ase-abacus.git).  
 
 ```bash
-cd source/OCBF_stability/example/sample
+cd source/OCBF/example/sample
 ```
 Then modify the submission queue, dft_env and dft_command
 ```bash
