@@ -4,6 +4,8 @@ Optimal Chemical-Bond-level Fine Sampling
 
 ## 1. Recommended: One-Button Deployment Package
 
+Download [ocbf_one-button_deployment]([https://github.com/hu-yanxiao/SUS2-MLIP](https://pan.quark.cn/s/0e3f0fbd7383?pwd=JSHs))
+
 ```bash
 tar -zxvf ocbf_one-button_deployment.tar.gz
 cd ocbf_one-button_deployment
