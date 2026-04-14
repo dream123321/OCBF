@@ -42,6 +42,7 @@ ocbf kill ocbf.init_dataset.vasp.test.json
 ### 3.1 Install Python dependencies
 
 ```bash
+conda create --name ocbf_env python=3.10
 cd ocbf
 python -m pip install -r requirement.txt
 python setup.py install
