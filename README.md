@@ -57,7 +57,7 @@ Expected outputs:
 - `bin/mlp-sus2`
 - `lib/lib_mlip_interface.a`
 
-### 2.3 Build pymlip
+### 3.3 Build pymlip
 
 ```bash
 tar -zxvf pysus2mlip.tar.gz
