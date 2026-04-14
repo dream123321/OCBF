@@ -43,7 +43,7 @@ ocbf kill ocbf.init_dataset.vasp.test.json
 
 ```bash
 conda create --name ocbf_env python=3.10
-OCBF/ocbf
+cd OCBF/ocbf
 python -m pip install -r requirement.txt
 python setup.py install
 ```
