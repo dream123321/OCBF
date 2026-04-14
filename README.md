@@ -3,6 +3,7 @@
 Optimal Chemical-Bond-level Fine Sampling
 
 ## 1. Recommended: One-Button Deployment Package
+Support ldd (GNU libc) version ≥ 2.17 
 
 Download [ocbf_one-button_deployment](https://pan.quark.cn/s/0e3f0fbd7383?pwd=JSHs)
 
