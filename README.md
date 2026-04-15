@@ -9,7 +9,7 @@ Support ldd (GNU libc) version ≥ 2.17
 
 Download the deployment package from the GitHub Release assets:
 
-[ocbf_one-button_deployment.tar.gz](https://github.com/dream123321/OCBF/releases/download/deploy-20260415/ocbf_one-button_deployment.tar.gz)
+[Download link ocbf_one-button_deployment.tar.gz](https://github.com/dream123321/OCBF/releases/download/deploy-20260415/ocbf_one-button_deployment.tar.gz)
 
 
 ```bash
