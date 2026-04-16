@@ -16,7 +16,7 @@ pair_style sus2mtp current_0.mtp
 pair_coeff * *
 
 neighbor 2.0 bin
-neigh_modify delay 10 check yes
+neigh_modify delay 1 check yes
 
 timestep    ${dt}
 variable Tdamp equal "v_dt * 100"
@@ -60,7 +60,7 @@ pair_style sus2mtp current_0.mtp
 pair_coeff * *
 
 neighbor 2.0 bin
-neigh_modify delay 10 check yes
+neigh_modify delay 1 check yes
 
 timestep    ${dt}
 variable Tdamp equal "v_dt * 100"
