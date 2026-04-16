@@ -17,28 +17,14 @@
       "include_source_structures": true,
       "random_displacement": {
         "enabled": true,
-        "supercell": [
-          1,
-          1,
-          1
-        ],
-        "strain": [
-          1.05,
-          1.02,
-          1.0,
-          0.98,
-          0.95
-        ],
+        "supercell": [1, 1, 1],
+        "strain": [1.05, 1.02, 1.0, 0.98, 0.95],
         "rattle_count": 10,
         "rattle_step": 0.005,
         "seed": 42,
         "phonon_displacement": {
           "enabled": true,
-          "supercell": [
-            1,
-            1,
-            1
-          ],
+          "supercell": [1, 1, 1],
           "distance": 0.01,
           "diag": true,
           "plusminus": "auto",
@@ -49,11 +35,7 @@
       },
       "md": {
         "enabled": true,
-        "supercell": [
-          1,
-          1,
-          1
-        ],
+        "supercell": [1, 1, 1],
         "calc_type": "nep",
         "model": null,
         "ele_list": null,
@@ -79,14 +61,7 @@
   },
   "sampling": {
     "workflow": {
-      "main_loop_npt": [
-        [
-          200
-        ],
-        [
-          300
-        ]
-      ],
+      "main_loop_npt": [[200], [300]],
       "main_loop_nvt": null,
       "mode": "full-automatic",
       "sleep_time": 10,
@@ -97,33 +72,20 @@
     "parameter": {
       "size": "(1, 1, 1)",
       "sort_ele": true,
-      "nvt_lattice_scaling_factor": [
-        1
-      ],
+      "nvt_lattice_scaling_factor": [1],
       "mlp_encode_model": true,
       "encoding_cores": 2,
       "iw_method": "Freedman_Diaconis",
       "iw": 0.01,
       "iw_scale": 1.0,
-      "body_list": [
-        "two",
-        "three"
-      ],
+      "body_list": ["two", "three"],
       "mtp_type": "l2k2",
-      "selection_budget_schedule": [
-        20,
-        15,
-        10
-      ],
-      "coverage_threshold_schedule": [
-        99.5,
-        99.9,
-        99.99
-      ],
+      "selection_budget_schedule": [20, 15, 10],
+      "coverage_threshold_schedule": [99.5, 99.9, 99.99],
       "coverage_rate_method": "mean",
       "coverage_calculation_mode": "per_configuration",
       "report_per_configuration_details": true,
-      "plateau_generations": 5,
+      "plateau_generations": 7,
       "min_coverage_delta": 0.2,
       "dft": {
         "calc_dir_num": 10,
@@ -135,20 +97,20 @@
       "train_sus_queue": "1t75c",
       "train_sus_cores": 32,
       "train_sus_ptile": 64,
-      "train_env": "source /public/home/huangjing/app/ocbf/ocbf_dist/test/ocbf_one-button_deployment/activate.sh",
-      "sus2_mlp_exe": "/public/home/huangjing/app/ocbf/ocbf_dist/test/ocbf_one-button_deployment/runtime/bin/mlp-sus2",
-      "original_command": "mpirun /public/home/huangjing/app/ocbf/ocbf_dist/test/ocbf_one-button_deployment/runtime/bin/mlp-sus2 train hyx.mtp ../train.cfg --stdd-weight=0.0 --std-weight=0.0000 --max-iter=2000 --curr-pot-name=",
-      "subsequent_command": "mpirun /public/home/huangjing/app/ocbf/ocbf_dist/test/ocbf_one-button_deployment/runtime/bin/mlp-sus2 train hyx.mtp ../train.cfg --init-params=same --do-samp=false --stdd-weight=0.0 --std-weight=0.0000 --max-iter=1000 --curr-pot-name=",
+      "train_env": "module load compiler/2022.1.0 mpi/2021.6.0 mkl/2022.1.0 >/dev/null 2>&1",
+      "sus2_mlp_exe": "/work/phy-huangj/hyx/app-test/sus2-release/bin/mlp-sus2",
+      "original_command": "mpirun /work/phy-huangj/hyx/app-test/sus2-release/bin/mlp-sus2 train hyx.mtp ../train.cfg --stdd-weight=0.0 --std-weight=0.0000 --max-iter=2000 --curr-pot-name=",
+      "subsequent_command": "mpirun /work/phy-huangj/hyx/app-test/sus2-release/bin/mlp-sus2 train hyx.mtp ../train.cfg --init-params=same --do-samp=false --stdd-weight=0.0 --std-weight=0.0000 --max-iter=1000 --curr-pot-name=",
       "lmp_queue": "1t75c",
       "lmp_cores": 32,
       "lmp_ptile": 64,
-      "lmp_env": "source /public/home/huangjing/app/ocbf/ocbf_dist/test/ocbf_one-button_deployment/activate.sh",
-      "lmp_exe": "mpirun -np $NP /public/home/huangjing/app/ocbf/ocbf_dist/test/ocbf_one-button_deployment/runtime/bin/lmp_mpi",
+      "lmp_env": "module load compiler/2022.1.0 mpi/2021.6.0 mkl/2022.1.0 >/dev/null 2>&1",
+      "lmp_exe": "mpirun -machinefile $LSB_DJOB_HOSTFILE -np $NP /work/phy-huangj/app/interface-lammps-mlip-2/lmp_intel_cpu_intelmpi",
       "scf_queue": "1t75c",
       "scf_cores": 32,
       "scf_ptile": 64,
       "scf_cal_engine": "vasp",
-      "submission_backend": "sbatch",
+      "submission_backend": "bsub",
       "dft_env": "module load compiler/2022.1.0 mpi/2021.6.0 mkl/2022.2.0\nexport PATH=/work/phy-huangj/app/vasp.5.4.4/bin:/work/phy-huangj/app/vaspkit.1.5.1/bin:$PATH",
       "dft_command": "mpirun vasp_std"
     }
@@ -165,7 +127,7 @@
     "submit": true,
     "wait": true,
     "command_prefix": null,
-    "max_iter": 2000,
+    "max_iter": 3000,
     "predict": {
       "enabled": true,
       "input_xyz": null,
@@ -198,10 +160,7 @@
       "scatter_size": 50,
       "bins": 120,
       "dpi": 300,
-      "figsize": [
-        30,
-        10
-      ]
+      "figsize": [30, 10]
     }
   }
 }
