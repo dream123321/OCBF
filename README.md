@@ -26,7 +26,7 @@ The DFT software needs to be installed by yourself. if scf_cal_engine = abacus, 
 ```bash
 cd source/OCBF/example/sample
 ```
-Then modify the submission queue, dft_env and dft_command. Before starting the task, you need to source the path/to/source.sh.
+Then modify the submission queue, dft_env and dft_command. Before starting the task, you need to source the path/to/activate.sh
 ```bash
 source path/to/activate.sh
 ocbf run ocbf.init_dataset.vasp.test.json 
