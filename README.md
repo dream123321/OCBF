@@ -28,7 +28,7 @@ cd source/OCBF/example/sample
 ```
 Then modify the submission queue, dft_env and dft_command. Before starting the task, you need to source the path/to/source.sh.
 ```bash
-source path/to/source.sh
+source path/to/activate.sh
 ocbf run ocbf.init_dataset.vasp.test.json 
 ```
 
