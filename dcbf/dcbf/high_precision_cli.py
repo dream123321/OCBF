@@ -16,6 +16,7 @@ from ase.optimize import BFGS, BFGSLineSearch, FIRE, GPMin, LBFGS, LBFGSLineSear
 import numpy as np
 
 from .cli_defaults import defaults_epilog, format_section_defaults, get_section_defaults, set_section_defaults
+from .cli_examples import append_command_example
 from .das.file_conversion import write_normalized_extxyz, xyz2cfg
 from .efs_distribution import EFSDistributionAnalyzer
 from .high_precision_tools import plot_errors_main, predict_xyz_main
@@ -98,11 +99,12 @@ def add_high_precision_subparsers(subparsers):
     _build_plot_errors_parser(subparsers)
 
 
-def _required_epilog(required_text, defaults_section=None):
+def _required_epilog(required_text, defaults_section=None, command=None):
     sections = [f"Required input:\n  {required_text}"]
     if defaults_section:
         sections.append(defaults_epilog(defaults_section))
-    return "\n\n".join(sections)
+    text = "\n\n".join(sections)
+    return append_command_example(text, command) if command else text
 
 
 def _build_train_parser(subparsers):
@@ -111,7 +113,11 @@ def _build_train_parser(subparsers):
         "train",
         help="generate SUS2 training files from one xyz/extxyz dataset",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=_required_epilog("exactly one xyz/extxyz dataset, or `set key=value ...` to update defaults.", "train"),
+        epilog=_required_epilog(
+            "exactly one xyz/extxyz dataset, or `set key=value ...` to update defaults.",
+            "train",
+            "train",
+        ),
     )
     parser.add_argument("items", nargs="*", help='input xyz file, or `set key=value ...`')
     parser.add_argument("--template", choices=sorted(TRAINING_TEMPLATE_CHOICES), help=f"training template type (current: {defaults['template']})")
@@ -142,6 +148,7 @@ def _build_relax_parser(subparsers):
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=_required_epilog(
             "at least one input structure; model must be provided via --model or saved default.",
+            "relax",
             "relax",
         ),
     )
@@ -174,7 +181,11 @@ def _build_efs_distri_parser(subparsers):
         "efs-distri",
         help="plot energy/force/stress distributions from xyz/extxyz",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=_required_epilog("exactly one xyz/extxyz file, or `set key=value ...` to update defaults.", "efs_distri"),
+        epilog=_required_epilog(
+            "exactly one xyz/extxyz file, or `set key=value ...` to update defaults.",
+            "efs_distri",
+            "efs-distri",
+        ),
     )
     parser.add_argument("items", nargs="*", help='input xyz file, or `set key=value ...`')
     parser.add_argument("--force-threshold", type=float, dest="force_threshold", help=f"frame filter by max force (current: {defaults['force_threshold']})")
@@ -200,7 +211,11 @@ def _build_predict_xyz_parser(subparsers):
         "predict-xyz",
         help="run the bundled prediction tool that writes predicted xyz/extxyz outputs",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=_required_epilog("exactly one input structure file, or `set key=value ...` to update defaults.", "predict_xyz"),
+        epilog=_required_epilog(
+            "exactly one input structure file, or `set key=value ...` to update defaults.",
+            "predict_xyz",
+            "predict-xyz",
+        ),
     )
     parser.add_argument("items", nargs="*", help='input structure file, or `set key=value ...`')
     parser.add_argument("--calc-type", "-c", choices=["nep", "mace", "chgnet", "dp", "m3gnet", "mattersim", "sus2"], dest="calc_type", help=f"calculator type (current: {defaults['calc_type']})")
@@ -232,6 +247,7 @@ def _build_plot_errors_parser(subparsers):
         epilog=_required_epilog(
             "exactly two files: DFT reference and MLIP prediction, or `set key=value ...` to update defaults.",
             "plot_errors",
+            "plot-errors",
         ),
     )
     parser.add_argument("items", nargs="*", help='DFT file + MLIP file, or `set key=value ...`')
@@ -314,6 +330,11 @@ def handle_relax_command(args):
     model_path = options.get("model")
     if not model_path:
         raise SystemExit("dcbf relax requires a model path; set it with `dcbf relax set model=/path/to/p.mtp`")
+    if not options.get("elements"):
+        raise SystemExit(
+            "dcbf relax requires the SUS2/MTP element order; "
+            "pass --elements or save it with `dcbf relax set elements=Si`"
+        )
 
     input_paths = _expand_input_items(items, options.get("batch", False))
     if not input_paths:
@@ -393,6 +414,11 @@ def handle_predict_xyz_command(args):
             options[key] = value
     if args.elements is not None:
         options["elements"] = list(args.elements)
+    if str(options.get("calc_type", "")).strip().lower() == "sus2" and not options.get("elements"):
+        raise SystemExit(
+            "dcbf predict-xyz --calc-type sus2 requires the model element order; "
+            "pass --elements or save it with `dcbf predict-xyz set elements=Si`"
+        )
 
     argv = [items[0], "--calc_type", str(options["calc_type"])]
     if options.get("model"):

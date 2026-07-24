@@ -33,8 +33,9 @@ def cp2k_main_xyz(current, out_name, ori_out_name, force_threshold):
             sub_dir_path = os.path.join(path, sub_dir)
 
             try:
-                ok_count = ok_count + ok(sub_dir_path)
-                if ok(sub_dir_path)==1:
+                task_ok = ok(sub_dir_path)
+                ok_count = ok_count + task_ok
+                if task_ok == 1:
                     atom = collect_efs(sub_dir_path)
                     write_normalized_extxyz(ori_out_name, atom, append=True)
                     len_count = len_count + 1

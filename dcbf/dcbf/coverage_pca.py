@@ -29,6 +29,16 @@ try:
 except ImportError:  # pragma: no cover - standalone installs may not need --run-dir mode.
     yaml = None
 
+try:
+    from .runtime_config import build_md_loop_schedule
+except ImportError:  # pragma: no cover - direct script execution fallback.
+    from runtime_config import build_md_loop_schedule
+
+try:
+    from .cli_examples import RawDefaultsHelpFormatter, command_example_epilog
+except ImportError:  # pragma: no cover - direct script execution fallback.
+    from cli_examples import RawDefaultsHelpFormatter, command_example_epilog
+
 
 DEFAULT_DATA_MODES = ["two", "three"]
 DEFAULT_MLP_EXE = None
@@ -682,27 +692,25 @@ def find_structure_source(run_dir: Path) -> Path:
     raise FileNotFoundError(f"No POSCAR/CONTCAR/*.vasp/*.cif/*.xyz found in {run_dir / 'stru'}")
 
 
-def flatten_temperature_values(values) -> List[float]:
-    if values is None:
-        return []
-    result = []
-    if isinstance(values, (list, tuple)):
-        for item in values:
-            result.extend(flatten_temperature_values(item))
-        return result
-    try:
-        result.append(float(values))
-    except (TypeError, ValueError):
-        pass
-    return result
-
-
-def choose_lammps_temperature(runtime_config: Dict) -> float:
+def choose_lammps_query_conditions(runtime_config: Dict) -> List[Tuple[str, float]]:
     workflow = dict(runtime_config.get("workflow") or {})
-    temps = flatten_temperature_values(workflow.get("main_loop_npt"))
-    if not temps:
-        temps = flatten_temperature_values(workflow.get("main_loop_nvt"))
-    return temps[-1] if temps else 300.0
+    schedule = build_md_loop_schedule(
+        workflow.get("main_loop_npt"),
+        workflow.get("main_loop_nvt"),
+    )
+    conditions = []
+    for ensemble in ("npt", "nvt"):
+        temperatures = [temperature for loop in schedule for temperature in loop[ensemble]]
+        if temperatures:
+            conditions.append((ensemble, float(temperatures[-1])))
+    return conditions
+
+
+def lammps_query_condition_records(conditions: Sequence[Tuple[str, float]]) -> List[Dict]:
+    return [
+        {"ensemble": ensemble, "temperature": float(temperature)}
+        for ensemble, temperature in conditions
+    ]
 
 
 def inject_sus2_pair_style(script_text: str, mtp_filename: str) -> str:
@@ -996,8 +1004,7 @@ def run_lammps_query_generation(run_dir: Path, args: argparse.Namespace, output_
     elements = list(parameter.get("ele") or args.elements)
     sort_ele = bool(parameter.get("sort_ele", True))
     size = parse_repeat_size(parameter.get("size", "(1, 1, 1)"))
-    ensemble = "npt" if runtime_config.get("workflow", {}).get("main_loop_npt") is not None else "nvt"
-    temp = choose_lammps_temperature(runtime_config)
+    query_conditions = choose_lammps_query_conditions(runtime_config)
 
     query_root = output_xyz.parent
     query_root.mkdir(parents=True, exist_ok=True)
@@ -1005,7 +1012,10 @@ def run_lammps_query_generation(run_dir: Path, args: argparse.Namespace, output_
 
     mtp_path = find_default_mtp(run_dir)
     if mtp_path is None:
-        raise FileNotFoundError(f"Could not find current.mtp/current_0.mtp under {run_dir}; pass --mtp or create the model first.")
+        raise FileNotFoundError(
+            f"Could not find current.mtp/current_0.mtp under {run_dir}; "
+            "pass --model or create the model first."
+        )
 
     all_sources = find_structure_sources(run_dir)
     selected_sources = select_query_structure_sources(all_sources, getattr(args, "query_structures", "all"))
@@ -1013,53 +1023,87 @@ def run_lammps_query_generation(run_dir: Path, args: argparse.Namespace, output_
         "Selected LAMMPS query structures: "
         + ", ".join(f"{item.index}:{item.label}({item.path.name}:frame{item.frame_index})" for item in selected_sources)
     )
+    print(
+        "Selected LAMMPS query conditions: "
+        + ", ".join(f"{ensemble}@{temperature:g} K" for ensemble, temperature in query_conditions)
+    )
 
     all_frames = []
     manifest = []
     for source in selected_sources:
-        work_dir = query_root if len(selected_sources) == 1 else query_root / "runs" / source.label
-        frames = _run_lammps_query_for_structure(
-            run_dir,
-            args,
-            work_dir,
-            source.atoms,
-            size,
-            specorder,
-            scheduler,
-            ensemble,
-            temp,
-            mtp_path,
-        )
-        for atoms in frames:
-            atoms.info["coverage_query_structure"] = source.label
-            atoms.info["coverage_query_source"] = str(source.path)
-            atoms.info["coverage_query_source_frame"] = int(source.frame_index)
-        all_frames.extend(frames)
-        manifest.append(
-            {
-                "index": source.index,
-                "label": source.label,
-                "source": str(source.path),
-                "source_frame": source.frame_index,
-                "work_dir": str(work_dir),
-                "frames": len(frames),
-            }
-        )
+        for ensemble, temperature in query_conditions:
+            work_dir = query_root / "runs" / source.label / ensemble
+            frames = _run_lammps_query_for_structure(
+                run_dir,
+                args,
+                work_dir,
+                source.atoms,
+                size,
+                specorder,
+                scheduler,
+                ensemble,
+                temperature,
+                mtp_path,
+            )
+            for atoms in frames:
+                atoms.info["coverage_query_structure"] = source.label
+                atoms.info["coverage_query_source"] = str(source.path)
+                atoms.info["coverage_query_source_frame"] = int(source.frame_index)
+                atoms.info["coverage_query_ensemble"] = ensemble
+                atoms.info["coverage_query_temperature"] = float(temperature)
+            all_frames.extend(frames)
+            manifest.append(
+                {
+                    "index": source.index,
+                    "label": source.label,
+                    "source": str(source.path),
+                    "source_frame": source.frame_index,
+                    "ensemble": ensemble,
+                    "temperature": float(temperature),
+                    "work_dir": str(work_dir),
+                    "frames": len(frames),
+                }
+            )
 
     if not all_frames:
         raise ValueError("LAMMPS query generation produced no frames.")
     if output_xyz.exists():
         output_xyz.unlink()
     write(str(output_xyz), all_frames, format="extxyz")
-    (query_root / "query_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    manifest_payload = {
+        "schema_version": 2,
+        "query_conditions": lammps_query_condition_records(query_conditions),
+        "runs": manifest,
+        "total_frames": len(all_frames),
+    }
+    (query_root / "query_manifest.json").write_text(json.dumps(manifest_payload, indent=2), encoding="utf-8")
     return output_xyz
+
+
+def lammps_query_manifest_matches(run_dir: Path, manifest_path: Path) -> bool:
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != 2:
+        return False
+    runtime_config = read_json_if_exists(run_dir / "dcbf.runtime.json")
+    expected = lammps_query_condition_records(choose_lammps_query_conditions(runtime_config))
+    return manifest.get("query_conditions") == expected
 
 
 def ensure_lammps_query(run_dir: Path, args: argparse.Namespace) -> Path:
     output_xyz = run_dir / "coverage_query_lammps" / "query.xyz"
     if output_xyz.exists() and not args.force_query:
-        print(f"Using existing coverage LAMMPS query xyz: {output_xyz}")
-        return output_xyz
+        manifest_path = output_xyz.parent / "query_manifest.json"
+        if lammps_query_manifest_matches(run_dir, manifest_path):
+            print(f"Using existing coverage LAMMPS query xyz: {output_xyz}")
+            return output_xyz
+        print(
+            "Existing coverage LAMMPS query does not match the current NPT/NVT conditions; "
+            f"regenerating: {output_xyz}"
+        )
+        return run_lammps_query_generation(run_dir, args, output_xyz)
 
     for candidate_name in ("npt.xyz", "query.xyz", DEFAULT_QUERY):
         candidate = run_dir / candidate_name
@@ -1916,7 +1960,7 @@ def write_summary_csv(
             writer.writerow(row)
 
 
-def write_coverage_remark(out_dir: Path) -> Path:
+def write_coverage_remark(out_dir: Path, skipped_elements: Optional[Dict[str, str]] = None) -> Path:
     remark_path = out_dir / "coverage_remark.txt"
     remark_text = """中文说明
 
@@ -1930,8 +1974,15 @@ In the DCBF coverage plot, the default display standard is 2D coverage. When cov
 
 When coverage-mode=1d is selected, the colors are not assigned directly from the PC1-PC2 grid. The program first calculates a 1D coverage score for each query point along one-dimensional feature directions and obtains the overall 1D coverage rate. It then ranks query points by these 1D coverage scores and marks a corresponding number of top-ranked query points as covered according to the overall 1D coverage rate, while the rest are marked as uncovered. Across multiple loops, the program uses monotonic top-k labeling, meaning that points already marked as covered in earlier loops are not removed in later loops. Thus, 1D colors are statistical labels based on ranked one-dimensional coverage scores, and they do not necessarily mean that the point is covered in the PC1-PC2 grid.
 """
+    remark_lines = [remark_text.strip()]
+    if skipped_elements:
+        remark_lines.extend(["", "Skipped coverage elements:"])
+        remark_lines.extend(
+            f"{element}: {reason}"
+            for element, reason in skipped_elements.items()
+        )
     out_dir.mkdir(parents=True, exist_ok=True)
-    remark_path.write_text(remark_text.strip() + "\n", encoding="utf-8")
+    remark_path.write_text("\n".join(remark_lines) + "\n", encoding="utf-8")
     return remark_path
 
 
@@ -2315,6 +2366,26 @@ def print_coverage_lists(
                 print(f"{element} --> {values}")
 
 
+def normalize_coverage_mtp_type(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"l2k2", "l2k3"}:
+        normalized += ".mtp"
+    if normalized not in {"l2k2.mtp", "l2k3.mtp"}:
+        raise argparse.ArgumentTypeError(
+            "--mtp-type must be l2k2.mtp or l2k3.mtp"
+        )
+    return normalized
+
+
+def resolve_model_argument(args: argparse.Namespace) -> str:
+    model = getattr(args, "model", None)
+    legacy_model = getattr(args, "legacy_mtp", None)
+    args.model = str(model or legacy_model or DEFAULT_MTP)
+    return args.model
+
+
 def add_coverage_pca_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument(
         "--input",
@@ -2368,13 +2439,19 @@ def add_coverage_pca_arguments(parser: argparse.ArgumentParser) -> argparse.Argu
         "--elements",
         nargs="+",
         default=None,
-        help="Element order for descriptor types. If omitted, elements are detected from --input/--query and sorted by atomic number.",
+        help=(
+            "Element order for descriptor types. Required for standalone use; "
+            "--run-dir reads it from the workspace runtime configuration."
+        ),
     )
     parser.add_argument(
         "--plot-elements",
         nargs="+",
         default=None,
-        help="Elements to plot and print. If omitted, all resolved --elements are used.",
+        help=(
+            "Elements to plot and print. If omitted, all resolved --elements are considered. "
+            "Elements without descriptor data in the query or any selected input loop are skipped."
+        ),
     )
     parser.add_argument(
         "--body-list",
@@ -2389,8 +2466,22 @@ def add_coverage_pca_arguments(parser: argparse.ArgumentParser) -> argparse.Argu
         default=argparse.SUPPRESS,
         help="Path to mlp-sus2 executable. Default: current deployment runtime/bin/mlp-sus2, then PATH.",
     )
-    parser.add_argument("--mtp", default=DEFAULT_MTP, help="Path to current.mtp.")
-    parser.add_argument("--mtp-type", default="l2k2.mtp", choices=["l2k2.mtp", "l2k3.mtp"], help="MTP descriptor type.")
+    parser.add_argument(
+        "--model",
+        default=None,
+        help=f"Path to the SUS2/MTP model file. Default: {DEFAULT_MTP}.",
+    )
+    parser.add_argument("--mtp", dest="legacy_mtp", default=None, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--mtp-type",
+        type=normalize_coverage_mtp_type,
+        default=None,
+        metavar="{l2k2.mtp,l2k3.mtp}",
+        help=(
+            "MTP descriptor template type. Required for standalone use; "
+            "--run-dir reads it from the workspace runtime configuration."
+        ),
+    )
     parser.add_argument("--element-model", type=int, default=1, choices=[1, 2], help="Element mapping mode from old xyz2out script.")
     parser.add_argument("--descriptor-workers", type=int, default=DEFAULT_DESCRIPTOR_WORKERS, help="Workers for each xyz descriptor conversion.")
     parser.add_argument("--coverage-workers", type=int, default=DEFAULT_COVERAGE_WORKERS, help="Workers for coverage calculation.")
@@ -2473,11 +2564,9 @@ def add_coverage_pca_arguments(parser: argparse.ArgumentParser) -> argparse.Argu
 def build_coverage_pca_parser(prog: Optional[str] = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=prog,
-        description=(
-            "Compute descriptors, shared PCA, 1D/2D FD-grid coverage, and PCA figures for DCBF loop datasets. "
-            "Typical: dcbf coverage-pca --input all_sample_data.xyz --query query.xyz --mtp current.mtp"
-        ),
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="Compute descriptors, shared PCA, 1D/2D FD-grid coverage, and PCA figures for DCBF loop datasets.",
+        formatter_class=RawDefaultsHelpFormatter,
+        epilog=command_example_epilog("coverage-pca"),
     )
     return add_coverage_pca_arguments(parser)
 
@@ -2486,11 +2575,9 @@ def add_coverage_pca_subparser(subparsers) -> argparse.ArgumentParser:
     parser = subparsers.add_parser(
         "coverage-pca",
         help="plot PCA coverage for all_sample_data.xyz against a query/B dataset",
-        description=(
-            "Compute descriptors, shared PCA, 1D/2D FD-grid coverage, and PCA figures for DCBF loop datasets. "
-            "Typical: dcbf coverage-pca --input all_sample_data.xyz --query query.xyz --mtp current.mtp"
-        ),
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="Compute descriptors, shared PCA, 1D/2D FD-grid coverage, and PCA figures for DCBF loop datasets.",
+        formatter_class=RawDefaultsHelpFormatter,
+        epilog=command_example_epilog("coverage-pca"),
     )
     return add_coverage_pca_arguments(parser)
 
@@ -2530,6 +2617,17 @@ def configure_run_dir_defaults(args: argparse.Namespace, script_dir: Path) -> Pa
     runtime_config = read_json_if_exists(run_dir / "dcbf.runtime.json")
     workflow = dict(runtime_config.get("workflow") or {})
     scheduler = dict(runtime_config.get("scheduler") or {})
+    parameter = dict(runtime_config.get("parameter") or {})
+    parameter_yaml = run_dir / "init" / "parameter.yaml"
+    if parameter_yaml.exists() and yaml is not None:
+        loaded_parameter = yaml.safe_load(parameter_yaml.read_text(encoding="utf-8")) or {}
+        for key, value in dict(loaded_parameter).items():
+            parameter.setdefault(key, value)
+
+    if not args.elements and parameter.get("ele"):
+        args.elements = list(parameter["ele"])
+    if not args.mtp_type and parameter.get("mtp_type"):
+        args.mtp_type = normalize_coverage_mtp_type(parameter["mtp_type"])
 
     if not args.input:
         args.input = str(run_dir / workflow.get("output_xyz_name", "all_sample_data.xyz"))
@@ -2543,11 +2641,11 @@ def configure_run_dir_defaults(args: argparse.Namespace, script_dir: Path) -> Pa
     if getattr(args, "mlp_exe", None) is None and scheduler.get("sus2_mlp_exe"):
         args.mlp_exe = scheduler["sus2_mlp_exe"]
 
-    mtp_path = Path(args.mtp)
-    if args.mtp == DEFAULT_MTP or not resolve_path(mtp_path, script_dir).exists():
+    model_path = Path(args.model)
+    if args.model == DEFAULT_MTP or not resolve_path(model_path, script_dir).exists():
         default_mtp = find_default_mtp(run_dir)
         if default_mtp is not None:
-            args.mtp = str(default_mtp)
+            args.model = str(default_mtp)
 
     query_label, query_path = parse_label_path(args.query if "=" in args.query else f"query={args.query}")
     resolved_query = query_path if query_path.is_absolute() else run_dir / query_path
@@ -2590,20 +2688,12 @@ def resolve_elements_from_sources(
     query_source: Path,
     script_dir: Path,
 ) -> None:
-    if args.elements:
-        args.elements = list(args.elements)
-    else:
-        detected = set()
-        for _, source in dataset_items:
-            detected.update(collect_elements_from_xyz(source, script_dir))
-        detected.update(collect_elements_from_xyz(query_source, script_dir))
-        if not detected:
-            raise ValueError(
-                "Could not auto-detect elements from --input/--query xyz files. "
-                "Pass --elements explicitly when using descriptor directories or unreadable inputs."
-            )
-        args.elements = sort_elements_by_atomic_number(detected)
-        print(f"Auto-detected elements: {args.elements}")
+    if not args.elements:
+        raise ValueError(
+            "coverage-pca requires the SUS2/MTP element order. "
+            "Pass --elements for standalone use, or use --run-dir with a prepared DCBF workspace."
+        )
+    args.elements = list(args.elements)
 
     if args.plot_elements:
         args.plot_elements = list(args.plot_elements)
@@ -2611,12 +2701,99 @@ def resolve_elements_from_sources(
         args.plot_elements = list(args.elements)
 
 
+def resolve_coverage_elements(
+    args: argparse.Namespace,
+    dataset_specs: Sequence[DatasetSpec],
+    ref_aee_by_label: Dict[str, Dict[int, np.ndarray]],
+    query_aee: Dict[int, np.ndarray],
+    element_to_type: Dict[str, int],
+) -> Tuple[List[str], Dict[str, str]]:
+    requested_plot_elements = list(args.plot_elements)
+    unknown_plot_elements = [
+        element
+        for element in requested_plot_elements
+        if element not in element_to_type
+    ]
+    if unknown_plot_elements:
+        raise ValueError(
+            "Plot element(s) not present in --elements: "
+            + ", ".join(unknown_plot_elements)
+        )
+
+    coverage_elements: List[str] = []
+    skipped_elements: Dict[str, str] = {}
+    for element in args.elements:
+        ele_type = element_to_type[element]
+        reasons = []
+        if query_aee[ele_type].shape[0] == 0:
+            reasons.append("absent from query")
+
+        empty_input_labels = [
+            spec.label
+            for spec in dataset_specs
+            if ref_aee_by_label[spec.label][ele_type].shape[0] == 0
+        ]
+        if empty_input_labels:
+            reasons.append(
+                "absent from input loop(s): " + ", ".join(empty_input_labels)
+            )
+
+        if reasons:
+            skipped_elements[element] = "; ".join(reasons)
+        else:
+            coverage_elements.append(element)
+
+    if skipped_elements:
+        print("Skipped coverage elements:")
+        for element, reason in skipped_elements.items():
+            print(f"  {element}: {reason}")
+
+    if not coverage_elements:
+        detail = "; ".join(
+            f"{element}: {reason}"
+            for element, reason in skipped_elements.items()
+        )
+        raise ValueError(
+            "No elements have non-empty descriptor data in both the query and "
+            f"every selected input loop. {detail}"
+        )
+
+    print(f"Coverage elements: {coverage_elements}")
+    args.plot_elements = [
+        element
+        for element in requested_plot_elements
+        if element in coverage_elements
+    ]
+    if not args.plot_elements:
+        requested_detail = "; ".join(
+            f"{element}: {skipped_elements.get(element, 'not available for coverage')}"
+            for element in requested_plot_elements
+        )
+        raise ValueError(
+            "None of the requested --plot-elements are available for coverage. "
+            + requested_detail
+        )
+
+    return coverage_elements, skipped_elements
+
+
 def main_from_args(args: argparse.Namespace) -> int:
     resolve_width_factors(args)
     resolve_grid_sources(args)
+    resolve_model_argument(args)
     script_dir = Path(__file__).resolve().parent
     if args.run_dir:
         configure_run_dir_defaults(args, script_dir)
+    if not args.elements:
+        raise ValueError(
+            "coverage-pca requires --elements for standalone use; "
+            "--run-dir can read the element order from dcbf.runtime.json or init/parameter.yaml."
+        )
+    if not args.mtp_type:
+        raise ValueError(
+            "coverage-pca requires --mtp-type for standalone use; "
+            "--run-dir can read it from dcbf.runtime.json or init/parameter.yaml."
+        )
     out_dir = Path(args.out_dir).resolve()
     descriptor_root = out_dir / "descriptors"
     pca_txt_root = out_dir / "pca_txt"
@@ -2627,7 +2804,7 @@ def main_from_args(args: argparse.Namespace) -> int:
         args.mlp_exe = str(mlp_exe)
     else:
         mlp_exe = resolve_path(Path(configured_mlp_exe), script_dir)
-    mtp_path = resolve_path(Path(args.mtp), script_dir)
+    mtp_path = resolve_path(Path(args.model), script_dir)
 
     if not mtp_path.exists():
         raise FileNotFoundError(f"MTP file not found: {mtp_path}")
@@ -2703,12 +2880,16 @@ def main_from_args(args: argparse.Namespace) -> int:
         ref_aee_by_label_by_mode[spec.label] = ref_aee_by_mode
 
     element_to_type = {element: index for index, element in enumerate(args.elements)}
-    for element in args.plot_elements:
-        if element not in element_to_type:
-            raise ValueError(f"Plot element {element} is not present in --elements")
+    coverage_elements, skipped_elements = resolve_coverage_elements(
+        args,
+        dataset_specs,
+        ref_aee_by_label,
+        query_aee,
+        element_to_type,
+    )
 
     pca_model_by_type: Dict[int, PcaModel] = {}
-    for element in args.elements:
+    for element in coverage_elements:
         ele_type = element_to_type[element]
         ref_arrays = [ref_aee_by_label[spec.label][ele_type] for spec in dataset_specs]
         fit_data = choose_element_fit_data(ref_arrays, query_aee[ele_type], args.pca_fit_source)
@@ -2728,7 +2909,7 @@ def main_from_args(args: argparse.Namespace) -> int:
     if uses_last_ref_grid:
         print(f"Using fixed FD grid from final input dataset: {final_dataset_label}")
 
-    for element in args.elements:
+    for element in coverage_elements:
         ele_type = element_to_type[element]
         if args.grid_source_2d == "last-ref":
             pca_model = pca_model_by_type[ele_type]
@@ -2750,7 +2931,7 @@ def main_from_args(args: argparse.Namespace) -> int:
     tasks = []
     for spec in dataset_specs:
         txt_dir = pca_txt_root / spec.label
-        for element in args.elements:
+        for element in coverage_elements:
             ele_type = element_to_type[element]
             ref_data = ref_aee_by_label[spec.label][ele_type]
             query_data = query_aee[ele_type]
@@ -2806,7 +2987,7 @@ def main_from_args(args: argparse.Namespace) -> int:
     results.sort(key=lambda item: (dataset_labels.index(item.dataset_label), item.ele_type))
     results_by_key = {(item.dataset_label, item.element): item for item in results}
     if args.coverage_mode == "1d":
-        monotonic_topk_labels(results_by_key, dataset_labels, args.elements)
+        monotonic_topk_labels(results_by_key, dataset_labels, coverage_elements)
     write_pca_point_files_for_results(
         results,
         args.coverage_mode,
@@ -2825,7 +3006,7 @@ def main_from_args(args: argparse.Namespace) -> int:
         args.width_factor_2d,
         args.width_factor_1d,
     )
-    remark_path = write_coverage_remark(out_dir)
+    remark_path = write_coverage_remark(out_dir, skipped_elements)
 
     figure_path = None
     if not args.no_plot:
@@ -2953,7 +3134,9 @@ def run_coverage_pca_from_config(config: Dict, run_dir: Path) -> int:
     elif scheduler.get("sus2_mlp_exe"):
         argv.extend(["--mlp-exe", str(scheduler["sus2_mlp_exe"])])
 
-    if coverage_cfg.get("mtp"):
+    if coverage_cfg.get("model"):
+        argv.extend(["--model", str(coverage_cfg["model"])])
+    elif coverage_cfg.get("mtp"):
         argv.extend(["--mtp", str(coverage_cfg["mtp"])])
     if coverage_cfg.get("lammps_exe"):
         argv.extend(["--lammps-exe", str(coverage_cfg["lammps_exe"])])

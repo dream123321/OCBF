@@ -12,12 +12,14 @@ def mkdir(dir):
 def modify_yaml(input,output,npt,nvt):
     with open(input, 'rb') as file:
         data = yaml.safe_load(file)
-    if npt is not None and nvt is not None:
-        data['mlp_MD'] = [{'npt': npt}, {'nvt': nvt}]
-    elif npt is None and nvt is not None:
-        data['mlp_MD'] = [{'nvt': nvt}]
-    elif npt is not None and nvt is None:
-        data['mlp_MD'] = [{'npt': npt}]
+    mlp_md = []
+    if npt:
+        mlp_md.append({'npt': npt})
+    if nvt:
+        mlp_md.append({'nvt': nvt})
+    if not mlp_md:
+        raise ValueError('npt and nvt cannot both be empty for the same MD loop')
+    data['mlp_MD'] = mlp_md
     with open(output, 'w') as file:
         yaml.safe_dump(data, file, default_flow_style=False)
 

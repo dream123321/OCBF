@@ -1,6 +1,6 @@
 # DCBF Update Notes
 
-Updated: 2026-06-19
+Updated: 2026-07-18
 
 - The program name has been changed from `ocbf` to `dcbf`, and the related commands, example configs, and directory naming were updated accordingly.
 - The deployment now bundles the SUS2 developer version, which provides faster execution and higher accuracy than the earlier packaged version.
@@ -10,6 +10,8 @@ Updated: 2026-06-19
 - In `coverage-pca`, the query dataset means the target dataset used to evaluate coverage against the sampled loop data. It can be provided explicitly with `--query` as an external xyz/traj dataset, or generated automatically as `query.xyz` from workspace structures through LAMMPS when `--run-dir` mode is used.
 - `plot-errors` now uses `sus2_plot_errors_v3.py` from the current deployment package.
 - Parameter names and input rules were further standardized, especially for coverage-related settings, the `body_list` name, and the `dq_width_*` replacements for older parameter names.
+- LAMMPS lost-atom warnings now report the last successfully written MD `step` before the error instead of the `original/current` atom counts.
+- Paired NPT/NVT schedules now support empty sublists to skip one ensemble at a loop index, and automatic coverage queries merge trajectories from the final configured NPT and NVT temperatures.
 
 Note:
 

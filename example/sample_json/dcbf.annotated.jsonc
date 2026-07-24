@@ -11,6 +11,7 @@
     "all_label": null,
     "builder": {
       "enabled": true,
+      "dataset_mode": "generated_only", // use "augment_existing" to prepend xyz_input and keep its labels
       "output_xyz": "init_dataset/init_dataset.xyz",
       "report_path": "init_dataset/build_report.json",
       "construction_methods": {
@@ -80,6 +81,9 @@
   },
   "sampling": {
     "workflow": {
+      // NPT/NVT may use [] to skip one ensemble at a main index. When both are lists,
+      // their outer lengths must match and the two entries at one index cannot both be [].
+      // One complete ensemble may still be null.
       "main_loop_npt": [
         [
           200
@@ -89,7 +93,6 @@
         ]
       ],
       "main_loop_nvt": null,
-      "mode": "full-automatic",
       "sleep_time": 10,
       "max_gen": 10,
       "output_xyz_name": "all_sample_data.xyz"
@@ -98,20 +101,20 @@
       "train_sus_queue": "256G56c",
       "train_sus_cores": 56,
       "train_sus_ptile": 56,
-      "train_env": "source /share/home/xill/hj/hj_app/dcbf_one-button_deployment/activate.sh",
-      "sus2_mlp_exe": "/share/home/xill/hj/hj_app/dcbf_one-button_deployment/runtime/bin/mlp-sus2",
-      "original_command": "mpirun -np $NP /share/home/xill/hj/hj_app/dcbf_one-button_deployment/runtime/bin/mlp-sus2 train hyx.mtp ../train.cfg --stdd-weight=0.0 --std-weight=0.0000 --max-iter=2000 --curr-pot-name=",
-      "subsequent_command": "mpirun /share/home/xill/hj/hj_app/dcbf_one-button_deployment/runtime/bin/mlp-sus2 train hyx.mtp ../train.cfg --init-params=same --do-samp=false --stdd-weight=0.0 --std-weight=0.0000 --max-iter=1000 --curr-pot-name=",
+      "train_env": "source /work/phy-huangj/hj_mlp/dcbf_one-button_deployment/activate.sh",
+      "sus2_mlp_exe": "/work/phy-huangj/hj_mlp/dcbf_one-button_deployment/runtime/bin/mlp-sus2",
+      "original_command": "mpirun -np $NP /work/phy-huangj/hj_mlp/dcbf_one-button_deployment/runtime/bin/mlp-sus2 train hyx.mtp ../train.cfg --stdd-weight=0.0 --std-weight=0.0000 --max-iter=2000 --do-lin --curr-pot-name=",
+      "subsequent_command": "mpirun /work/phy-huangj/hj_mlp/dcbf_one-button_deployment/runtime/bin/mlp-sus2 train hyx.mtp ../train.cfg --init-params=same --do-samp=false --stdd-weight=0.0 --std-weight=0.0000 --max-iter=1000 --do-lin --curr-pot-name=",
       "lmp_queue": "256G56c",
       "lmp_cores": 56,
       "lmp_ptile": 56,
-      "lmp_env": "source /share/home/xill/hj/hj_app/dcbf_one-button_deployment/activate.sh",
-      "lmp_exe": "mpirun -np $NP /share/home/xill/hj/hj_app/dcbf_one-button_deployment/runtime/bin/lmp_mpi",
+      "lmp_env": "source /work/phy-huangj/hj_mlp/dcbf_one-button_deployment/activate.sh",
+      "lmp_exe": "mpirun -np $NP /work/phy-huangj/hj_mlp/dcbf_one-button_deployment/runtime/bin/lmp_mpi",
       "scf_queue": "256G56c",
       "scf_cores": 28,
       "scf_ptile": 56,
       "scf_cal_engine": "vasp",
-      "submission_backend": "sbatch",
+      "submission_backend": "bsub",
       "dft_env": "export VASP_HOME=/share/software/vasp/6.5.1.intel.2023.2.0\nexport INTEL_ONEAPI=/share/intel/2022.2.0\nexport HDF5_ROOT=/share/libraries/hdf5/1.14.6.oneapi.2023.2.0\nexport PATH=\"$VASP_HOME/bin:$INTEL_ONEAPI/mpi/2021.6.0/bin:$INTEL_ONEAPI/compiler/2022.1.0/linux/bin/intel64:$INTEL_ONEAPI/compiler/2022.1.0/linux/bin:$PATH\"\nexport LD_LIBRARY_PATH=\"$HDF5_ROOT/lib:$INTEL_ONEAPI/mkl/2022.1.0/lib/intel64:$INTEL_ONEAPI/mpi/2021.6.0/lib/release:$INTEL_ONEAPI/mpi/2021.6.0/lib:$INTEL_ONEAPI/mpi/2021.6.0/libfabric/lib:$INTEL_ONEAPI/compiler/2022.1.0/linux/compiler/lib/intel64_lin:${LD_LIBRARY_PATH:-}\"\nexport FI_PROVIDER_PATH=\"$INTEL_ONEAPI/mpi/2021.6.0/libfabric/lib/prov\"\nulimit -s unlimited\nexport OMP_NUM_THREADS=1\nexport MKL_NUM_THREADS=1\nexport OMP_STACKSIZE=512M\nexport KMP_STACKSIZE=512M\nexport HDF5_USE_FILE_LOCKING=FALSE",
       "dft_command": "/share/intel/2022.2.0/mpi/2021.6.0/bin/mpirun -np $NP /share/software/vasp/6.5.1.intel.2023.2.0/bin/vasp_std"
     },
@@ -121,6 +124,7 @@
         "nvt_lattice_scaling_factor": [
           1
         ],
+        "npt_max_cell_volume_filter_factor": 1.5, // null disables; values below 1.1 fall back to 1.5
         "mtp_type": "l2k2"
       },
       "modes": {
@@ -142,7 +146,7 @@
           "coverage_threshold_schedule": [
             99.5,
             99.9,
-            99.95
+            99.92
           ],
           "coverage_rate_method": "mean",
           "coverage_calculation_mode": "per_configuration",
@@ -152,7 +156,8 @@
           "min_coverage_delta": 0.2,
           "state_population": 2,
           "report_state_population_zero_baseline": true,
-          "mean_descriptor_enabled": true
+          "mean_descriptor_enabled": false,
+          "mean_descriptor_low_coverage_threshold": 90.0 // per-configuration last-20% rule below this coverage
         },
         "das_adaptive": {
           "enabled": false,
@@ -201,6 +206,7 @@
       "coverage_mode": "2d",
       "coverage_grid": "last-loop",
       "pca_fit_source": "query",
+      "model": null, // optional model override; defaults to the workspace current.mtp
       "show_input": false,
       "axis_padding": 0.1,
       "max_plot_points": 2000000,

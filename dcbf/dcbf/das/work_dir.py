@@ -100,6 +100,87 @@ def check_finish(dirs,logger,log,pending_warning_hours=None):
             break
         time.sleep(10)
 
+def _read_tail_text(path, max_chars=20000):
+    if not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+            text = handle.read()
+    except OSError:
+        return ""
+    return text[-max_chars:]
+
+def is_dft_invalid_dir(path):
+    invalid_file = os.path.join(path, "__cp2k_invalid__")
+    if os.path.exists(invalid_file):
+        return True
+
+    failed_file = os.path.join(path, "__failed__")
+    if not os.path.exists(failed_file):
+        return False
+
+    text = "\n".join(
+        _read_tail_text(os.path.join(path, name))
+        for name in ("logout", "cp2k.out", "cp2k.err")
+    ).lower()
+    invalid_markers = (
+        "invalid",
+        "hard_and_fallback_failed",
+    )
+    return any(marker in text for marker in invalid_markers)
+
+def check_dft_finish(dirs, logger, log, pending_warning_hours=None):
+    last_report_signature = None
+    while True:
+        count = 0
+        failed_dirs = []
+        invalid_dirs = []
+        now_ts = time.time()
+        for a in dirs:
+            ok_file = os.path.join(a, "__ok__")
+            if os.path.exists(ok_file):
+                count += 1
+                continue
+            if is_dft_invalid_dir(a):
+                invalid_dirs.append(a)
+                count += 1
+                continue
+            failed_file = os.path.join(a, "__failed__")
+            if os.path.exists(failed_file):
+                failed_dirs.append(a)
+
+        if failed_dirs:
+            detail = ", ".join(failed_dirs[:10])
+            if len(failed_dirs) > 10:
+                detail += f", ... (+{len(failed_dirs) - 10} more)"
+            logger.error("Fatal DFT task failure markers found: %s", detail)
+            raise RuntimeError(f"Fatal DFT task failure markers found: {detail}")
+
+        overdue = _collect_overdue_dirs(dirs, pending_warning_hours, now_ts)
+        overdue = [(path, hours) for path, hours in overdue if not is_dft_invalid_dir(path)]
+        if overdue:
+            signature = tuple(sorted(path for path, _ in overdue))
+            if signature != last_report_signature:
+                detail = ", ".join(f"{path} ({hours:.2f} h)" for path, hours in overdue)
+                logger.warning(
+                    "SCF tasks exceeding pending_warning_hours=%s: %s",
+                    pending_warning_hours,
+                    detail,
+                )
+                last_report_signature = signature
+        else:
+            last_report_signature = None
+
+        if count == len(dirs):
+            if invalid_dirs:
+                detail = ", ".join(invalid_dirs[:10])
+                if len(invalid_dirs) > 10:
+                    detail += f", ... (+{len(invalid_dirs) - 10} more)"
+                logger.warning("DFT invalid tasks skipped: %s", detail)
+            logger.info(log)
+            break
+        time.sleep(10)
+
 #与check_finish区别，不用while循环
 def check_scf(pwd):
     count = 0

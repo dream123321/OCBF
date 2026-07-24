@@ -7,7 +7,6 @@ from .path_names import DFT_WORK_DIR, MD_WORK_DIR
 
 
 RUNTIME_PATTERN = re.compile(r"total_runtime(?:[:\uFF1A])?\s*([0-9.+\-eE]+)\s*s")
-LAMMPS_WALLTIME_PATTERN = re.compile(r"Total wall time:\s*(?:(\d+)-)?(\d+):(\d+):(\d+(?:\.\d+)?)")
 
 
 def _parse_runtime_file(path: Path):
@@ -21,21 +20,6 @@ def _parse_runtime_file(path: Path):
             runtimes.append(float(match.group(1)))
         except ValueError:
             continue
-    return runtimes
-
-
-def _parse_lammps_walltime_file(path: Path):
-    path = Path(path)
-    runtimes = []
-    if not path.exists():
-        return runtimes
-    text = path.read_text(encoding="utf-8", errors="ignore")
-    for match in LAMMPS_WALLTIME_PATTERN.finditer(text):
-        days = int(match.group(1) or 0)
-        hours = int(match.group(2))
-        minutes = int(match.group(3))
-        seconds = float(match.group(4))
-        runtimes.append(days * 86400.0 + hours * 3600.0 + minutes * 60.0 + seconds)
     return runtimes
 
 
@@ -63,17 +47,17 @@ def _iter_sampling_md_structure_dirs(run_dir: Path):
                 yield structure_dir
 
 
-def _iter_sampling_md_log_files(run_dir: Path):
+def _iter_sampling_md_time_files(run_dir: Path):
     seen = set()
     for structure_dir in _iter_sampling_md_structure_dirs(run_dir):
-        for log_path in sorted(structure_dir.glob("**/log.lammps")):
-            if not log_path.is_file():
+        for time_path in sorted(structure_dir.glob("**/time.txt")):
+            if not time_path.is_file():
                 continue
-            key = str(log_path.resolve())
+            key = str(time_path.resolve())
             if key in seen:
                 continue
             seen.add(key)
-            yield log_path
+            yield time_path
 
 
 def _parse_bsub_cores(script_path: Path):
@@ -152,11 +136,10 @@ def write_core_hours_report(run_dir, config, output_path):
     ]
     sampling_md_tasks = [
         {
-            "runtime_file": log_path,
+            "runtime_file": time_path,
             "cores": int(scheduler.get("lmp_cores", 0) or 0),
-            "parser": _parse_lammps_walltime_file,
         }
-        for log_path in _iter_sampling_md_log_files(run_dir)
+        for time_path in _iter_sampling_md_time_files(run_dir)
     ]
 
     categories = [
@@ -185,6 +168,8 @@ def write_core_hours_report(run_dir, config, output_path):
     total_core_hours = sum(item["core_hours"] for item in categories)
     missing_records = []
     for item in categories:
+        if item["category"] == "sampling_md_core_hours":
+            continue
         for record in item["missing_runtime_records"]:
             missing_records.append(f"{item['category']}: {record}")
 

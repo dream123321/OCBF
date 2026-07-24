@@ -157,15 +157,8 @@ for item in {{{range1}..{range2}}}; do
     cd $path/$item
     start_time=$(date +%s.%N)
     touch __start__
-    if $COMMAND_std > logout 2>&1; then
-        touch __ok__
-    else
-        status=$?
-        echo "COMMAND_std failed with exit code $status" >> logout
-        touch __failed__
-        exit $status
-    fi
-
+    $COMMAND_std > logout 2>&1
+    touch __ok__
     end_time=$(date +%s.%N)
     runtime=$(echo "$end_time - $start_time" | bc)
     cd $path

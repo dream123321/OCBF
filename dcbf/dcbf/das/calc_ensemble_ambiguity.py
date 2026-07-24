@@ -11,13 +11,30 @@ from ase.data import atomic_numbers,chemical_symbols
 from ..path_names import MD_WORK_DIR
 
 
+def _extract_last_lammps_step(lines, error_index):
+    for line in reversed(lines[:error_index]):
+        fields = line.split()
+        if len(fields) < 2:
+            continue
+        try:
+            step = int(fields[0])
+            float(fields[1])
+        except (TypeError, ValueError):
+            continue
+        if step >= 0:
+            return step
+    return None
+
+
 def _extract_lammps_error_message(lines):
     error_line = None
+    error_index = None
     last_command = None
-    for line in lines:
+    for index, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith("ERROR:"):
             error_line = stripped
+            error_index = index
         elif stripped.startswith("Last command:"):
             last_command = stripped
     if error_line is None:
@@ -25,10 +42,9 @@ def _extract_lammps_error_message(lines):
 
     message = error_line
     if "ERROR: Lost atoms:" in error_line:
-        message = "Lost atoms"
-        detail = error_line.split("ERROR: Lost atoms:", 1)[1].strip()
-        if detail:
-            message = f"{message} | {detail}"
+        step = _extract_last_lammps_step(lines, error_index)
+        step_text = str(step) if step is not None else "unknown"
+        message = f"Lost atoms | step={step_text}"
     if last_command:
         message = f"{message} | {last_command}"
     return True, message
@@ -54,7 +70,7 @@ def check_lmp_error(path):
     output_files = sorted(glob.glob(os.path.join(path, 'jobs_mlip_*.ini.out')))
     for output_file in output_files:
         with open(output_file, 'r', encoding='utf-8', errors='ignore') as handle:
-            lines = handle.readlines()[-50:]
+            lines = handle.readlines()[-200:]
         error, message = _extract_lammps_error_message(lines)
         if error:
             structure_name, case_name = _format_lammps_error_context(path)

@@ -15,8 +15,9 @@ import yaml
 from .dataset_builder import InitialDatasetBuilder
 from .das.file_conversion import cfg2xyz
 from .mtp import normalize_mtp_type
+from .npt_volume_filter import normalize_npt_max_cell_volume_filter_factor
 from .path_names import DFT_WORK_DIR
-from .runtime_config import load_json_config, normalize_scheduler_config, save_runtime_config
+from .runtime_config import build_md_loop_schedule, load_json_config, normalize_scheduler_config, save_runtime_config
 
 
 class WorkspaceBootstrapper:
@@ -37,6 +38,7 @@ class WorkspaceBootstrapper:
         "candidate_trigger",
         "plateau_generations",
         "min_coverage_delta",
+        "mean_descriptor_low_coverage_threshold",
     )
     REMOVED_PARAMETER_RENAMES = {
         "coverage_count_threshold": "state_population",
@@ -65,6 +67,7 @@ class WorkspaceBootstrapper:
         "size": "(1, 1, 1)",
         "sort_ele": True,
         "nvt_lattice_scaling_factor": [1],
+        "npt_max_cell_volume_filter_factor": 1.5,
         "das_ambiguity": True,
         "af_default": 0.01,
         "af_limit": 0.2,
@@ -97,6 +100,7 @@ class WorkspaceBootstrapper:
          "report_state_population_zero_baseline": False,
          "mean_descriptor_enabled": False,
          "mean_descriptor_state_population": 0,
+         "mean_descriptor_low_coverage_threshold": 90.0,
          "plateau_generations": None,
          "min_coverage_delta": None,
          "coverage_calculation_mode": "per_configuration",
@@ -116,6 +120,10 @@ class WorkspaceBootstrapper:
     @staticmethod
     def normalize_config_layout(config):
         normalized = dict(config)
+        if isinstance(normalized.get("workflow"), dict):
+            top_level_workflow = dict(normalized["workflow"])
+            top_level_workflow.pop("mode", None)
+            normalized["workflow"] = top_level_workflow
         init_dataset = normalized.pop("init_dataset", None)
         sampling = normalized.pop("sampling", None)
 
@@ -144,6 +152,7 @@ class WorkspaceBootstrapper:
                     "use sampling.structure_selection instead."
                 )
             workflow.update(dict(sampling.get("workflow", {})))
+            workflow.pop("mode", None)
             structure_selection = sampling.get("structure_selection")
             if structure_selection is None:
                 raise ValueError("sampling.structure_selection is required.")
@@ -156,6 +165,7 @@ class WorkspaceBootstrapper:
                 normalized["coverage_plot"] = merged_coverage_plot
 
         workflow["output_xyz"] = True
+        workflow.pop("mode", None)
         dataset = WorkspaceBootstrapper._normalize_dataset_config(dataset)
 
         normalized["dataset"] = dataset
@@ -243,6 +253,11 @@ class WorkspaceBootstrapper:
     def _normalize_dataset_config(cls, dataset):
         normalized = dict(dataset or {})
         builder = dict(normalized.get("builder") or {})
+        dataset_mode = normalized.get("dataset_mode")
+        if dataset_mode is not None:
+            builder["dataset_mode"] = dataset_mode
+        elif "dataset_mode" in builder:
+            normalized["dataset_mode"] = builder["dataset_mode"]
         construction_methods = builder.pop("construction_methods", None)
         if construction_methods is not None:
             methods = dict(construction_methods or {})
@@ -286,6 +301,8 @@ class WorkspaceBootstrapper:
         return (base_dir / path).resolve()
 
     def prepare_workspace(self):
+        workflow = self.config["workflow"]
+        build_md_loop_schedule(workflow.get("main_loop_npt"), workflow.get("main_loop_nvt"))
         dataset = self.config["dataset"]
         run_dir = self.resolve_path(self.config_dir, self.config.get("run_dir", "."))
         init_source_dir = self.resolve_path(self.config_dir, dataset.get("init_source_dir", "init"))
@@ -321,6 +338,10 @@ class WorkspaceBootstrapper:
         runtime_dataset = dict(runtime_config.get("dataset", {}))
         runtime_dataset["xyz_input"] = str(xyz_input)
         runtime_config["dataset"] = runtime_dataset
+        runtime_parameter = dict(runtime_config.get("parameter", {}))
+        runtime_parameter["ele"] = list(elements)
+        runtime_parameter["mtp_type"] = mtp_type
+        runtime_config["parameter"] = runtime_parameter
         runtime_config["scheduler"] = self.normalize_scheduler_keys(dict(self.config["scheduler"]))
         save_runtime_config(run_dir, runtime_config)
         return run_dir, xyz_input, elements, mtp_type, should_pause_after_build
@@ -438,6 +459,11 @@ class WorkspaceBootstrapper:
         parameter["encoding_cores"] = int(parameter.get("encoding_cores", 2))
         parameter["dq_width"] = float(parameter.get("dq_width", 0.01))
         parameter["dq_width_factor"] = float(parameter.get("dq_width_factor", 1.0))
+        parameter["mean_descriptor_low_coverage_threshold"] = float(
+            parameter.get("mean_descriptor_low_coverage_threshold", 90.0)
+        )
+        if not 0.0 <= parameter["mean_descriptor_low_coverage_threshold"] <= 100.0:
+            raise ValueError("mean_descriptor_low_coverage_threshold must be between 0 and 100")
         parameter["dataset_xyz_input"] = str(xyz_input)
         parameter["mtp_type"] = normalize_mtp_type(parameter.get("mtp_type", "l2k2"))
         mtp_type = parameter["mtp_type"]
@@ -467,6 +493,11 @@ class WorkspaceBootstrapper:
                 normalized[key] = merged
             elif key not in normalized:
                 normalized[key] = copy.deepcopy(default_value)
+        normalized["npt_max_cell_volume_filter_factor"] = (
+            normalize_npt_max_cell_volume_filter_factor(
+                normalized.get("npt_max_cell_volume_filter_factor")
+            )
+        )
         return normalized
 
     @classmethod

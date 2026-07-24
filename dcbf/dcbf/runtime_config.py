@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 from pathlib import Path
 import re
 
@@ -48,6 +49,63 @@ SUBMISSION_BACKEND_ALIASES = {
     "lsf": "bsub",
     "slurm": "sbatch",
 }
+
+
+def build_md_loop_schedule(main_loop_npt, main_loop_nvt):
+    loops = {
+        "main_loop_npt": main_loop_npt,
+        "main_loop_nvt": main_loop_nvt,
+    }
+    if main_loop_npt is None and main_loop_nvt is None:
+        raise ValueError("workflow.main_loop_npt and workflow.main_loop_nvt cannot both be null")
+
+    for name, values in loops.items():
+        if values is not None and not isinstance(values, list):
+            raise ValueError(f"workflow.{name} must be a list of temperature lists or null")
+
+    if main_loop_npt is not None and main_loop_nvt is not None:
+        if len(main_loop_npt) != len(main_loop_nvt):
+            raise ValueError(
+                "workflow.main_loop_npt and workflow.main_loop_nvt must have the same outer length: "
+                f"{len(main_loop_npt)} != {len(main_loop_nvt)}"
+            )
+
+    loop_count = len(main_loop_npt if main_loop_npt is not None else main_loop_nvt)
+    if loop_count == 0:
+        raise ValueError("workflow MD loop schedule cannot be empty")
+
+    schedule = []
+    for index in range(loop_count):
+        loop_values = {}
+        for name, values in loops.items():
+            temperatures = [] if values is None else values[index]
+            if not isinstance(temperatures, list):
+                raise ValueError(
+                    f"workflow.{name}[{index}] must be a temperature list; use [] to skip this ensemble"
+                )
+            for temperature_index, temperature in enumerate(temperatures):
+                if isinstance(temperature, bool):
+                    raise ValueError(
+                        f"workflow.{name}[{index}][{temperature_index}] must be numeric, got {temperature!r}"
+                    )
+                try:
+                    numeric_temperature = float(temperature)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"workflow.{name}[{index}][{temperature_index}] must be numeric, got {temperature!r}"
+                    ) from exc
+                if not math.isfinite(numeric_temperature):
+                    raise ValueError(
+                        f"workflow.{name}[{index}][{temperature_index}] must be finite, got {temperature!r}"
+                    )
+            loop_values[name.removeprefix("main_loop_")] = list(temperatures)
+
+        if not loop_values["npt"] and not loop_values["nvt"]:
+            raise ValueError(
+                f"workflow.main_loop_npt[{index}] and workflow.main_loop_nvt[{index}] cannot both be empty"
+            )
+        schedule.append(loop_values)
+    return schedule
 
 
 def _strip_json_comments(text):

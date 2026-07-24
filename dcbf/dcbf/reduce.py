@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -628,6 +629,67 @@ class DCBFReducer:
             if frequencies[index] > 0
         ]
 
+    def _build_occupied_intervals_with_targets(self, values):
+        values = np.asarray(values, dtype=float)
+        if values.size == 0:
+            return [], []
+        bin_count = self._resolve_histogram_bins(values)
+        frequencies, bin_edges = np.histogram(values, bins=bin_count)
+        intervals = []
+        targets = []
+        for index, frequency in enumerate(frequencies):
+            if frequency <= 0:
+                continue
+            intervals.append([float(bin_edges[index]), float(bin_edges[index + 1])])
+            if self.state_population <= 1:
+                targets.append(1)
+            else:
+                targets.append(int(min(int(frequency), self.state_population)))
+        return intervals, targets
+
+    def _find_multi_cover_set(self, classes, targets):
+        if not classes:
+            return []
+        if len(classes) != len(targets):
+            raise ValueError("Internal error: classes and targets length mismatch")
+
+        remaining = [max(0, int(target)) for target in targets]
+        class_counts = []
+        structure_to_classes = defaultdict(list)
+        for class_index, bucket in enumerate(classes):
+            counts = defaultdict(int)
+            for raw_index in bucket:
+                counts[int(raw_index)] += 1
+            class_counts.append(counts)
+            for structure_index, count in counts.items():
+                structure_to_classes[structure_index].append((class_index, count))
+
+        selected = []
+        available = set(structure_to_classes)
+        while available and any(value > 0 for value in remaining):
+            best_index = None
+            best_score = 0
+            for structure_index in available:
+                score = 0
+                for class_index, count in structure_to_classes[structure_index]:
+                    if remaining[class_index] > 0:
+                        score += min(count, remaining[class_index])
+                if score > best_score or (
+                    score == best_score and best_index is not None and structure_index < best_index
+                ):
+                    best_index = structure_index
+                    best_score = score
+            if best_index is None or best_score <= 0:
+                break
+
+            selected.append(best_index)
+            available.remove(best_index)
+            for class_index, count in structure_to_classes[best_index]:
+                if remaining[class_index] > 0:
+                    remaining[class_index] = max(0, remaining[class_index] - count)
+
+        return selected
+
     def _select_direct_indices(self, candidate_xyz_path):
         candidate_atoms = list(iread(str(candidate_xyz_path)))
         if not candidate_atoms:
@@ -646,6 +708,7 @@ class DCBFReducer:
             progress.update(1, "encoding-complete")
 
             classes = []
+            class_targets = []
             for body in self.body_list:
                 data_base_data = out_dir / f"database_{body}_body_coding_zlib.pkl"
                 if not data_base_data.exists():
@@ -659,7 +722,7 @@ class DCBFReducer:
                     if array_data.ndim != 2 or array_data.shape[0] == 0:
                         continue
                     for dim in range(array_data.shape[1]):
-                        intervals = self._build_occupied_intervals(array_data[:, dim])
+                        intervals, targets = self._build_occupied_intervals_with_targets(array_data[:, dim])
                         if not intervals:
                             continue
                         grouped = group_structure_indices_by_interval(
@@ -667,13 +730,19 @@ class DCBFReducer:
                             array_data[:, dim].tolist(),
                             intervals,
                         )
-                        classes.extend(bucket for bucket in grouped if bucket)
+                        for bucket, target in zip(grouped, targets):
+                            if bucket:
+                                classes.append(bucket)
+                                class_targets.append(target)
             progress.update(2, f"class_count={len(classes)}")
 
             if not classes:
                 progress.update(3, "no-classes")
                 return []
-            selected = sorted(set(int(index) for index in find_min_cover_set(classes)))
+            if self.state_population <= 1:
+                selected = sorted(set(int(index) for index in find_min_cover_set(classes)))
+            else:
+                selected = sorted(set(int(index) for index in self._find_multi_cover_set(classes, class_targets)))
             progress.update(3, f"selected={len(selected)}")
             return selected
         finally:

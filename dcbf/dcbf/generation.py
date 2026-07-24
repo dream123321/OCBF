@@ -47,6 +47,12 @@ from .das.work_dir import (
 from .encode.mlp_encode_sample_flow import main_sample_flow
 from .bootstrap import WorkspaceBootstrapper
 from .high_precision_training import HighPrecisionTrainer
+from .npt_volume_filter import (
+    annotate_das_candidates,
+    filter_annotated_das_atoms,
+    load_npt_volume_filter_report,
+    write_npt_volume_filter_report,
+)
 from .path_names import DFT_WORK_DIR, MD_WORK_DIR, SUS2_MODEL_DIR
 from .runtime_config import build_scheduler_spec, load_runtime_config
 
@@ -100,7 +106,6 @@ class GenerationRunner:
                 train_dirs.append(train_dir)
 
         if not train_dirs:
-            self.logger.info("No training logs were generated for this generation. Reusing the existing MLIP")
             return
 
         if gen_num == 0 and len(train_dirs) == 1:
@@ -312,6 +317,8 @@ class GenerationRunner:
                     self.parameter["end"],
                     self.parameter["num_elements"],
                 )
+                if self.parameter["npt_max_cell_volume_filter_factor"] is not None:
+                    annotate_das_candidates(structures, directory)
                 path_parts = os.path.normpath(directory).split(os.sep)
                 final_path = os.sep.join(path_parts[-3:])
                 filter_path = os.path.join(os.sep.join(path_parts[:-2]), "filter.xyz")
@@ -339,6 +346,7 @@ class GenerationRunner:
             and end_k == k
         ):
             self.logger.info("(threshold, n, cluster_threshold_init, k) parameters are equal: skip to select the structure by MBTR+Brich")
+            self._apply_das_npt_volume_filter(dirs_2)
             return
 
         for directory in dirs_2:
@@ -357,6 +365,60 @@ class GenerationRunner:
                     self.logger.info(f"{name}: selected {select} structures from {total} structures in data by MBTR+Brich.")
                 else:
                     shutil.copy("filter.xyz", f"{num}_sample_filter.xyz")
+        self._apply_das_npt_volume_filter(dirs_2)
+
+    def _apply_das_npt_volume_filter(self, structure_dirs):
+        factor = self.parameter["npt_max_cell_volume_filter_factor"]
+        if factor is None:
+            return
+        if load_npt_volume_filter_report(self.workspace) is not None:
+            return
+
+        total_stats = {
+            "original_selected_count": 0,
+            "kept_count": 0,
+            "removed_count": 0,
+        }
+        for structure_dir in structure_dirs:
+            sample_files = sorted(Path(structure_dir).glob("*_sample_filter.xyz"))
+            if len(sample_files) > 1:
+                raise RuntimeError(
+                    "Multiple DAS sample files found while applying the NPT "
+                    f"cell-volume filter: {structure_dir}"
+                )
+            if not sample_files:
+                continue
+
+            sample_path = sample_files[0]
+            selected_atoms = (
+                list(iread(str(sample_path), index=":"))
+                if sample_path.stat().st_size > 0
+                else []
+            )
+            kept_atoms, stats = filter_annotated_das_atoms(
+                selected_atoms,
+                factor,
+            )
+            for key in total_stats:
+                total_stats[key] += stats[key]
+
+            filtered_path = sample_path.with_name(
+                f"{len(kept_atoms)}_sample_filter.xyz"
+            )
+            if kept_atoms:
+                write(str(filtered_path), kept_atoms, format="extxyz")
+            else:
+                filtered_path.write_text("", encoding="utf-8")
+            if filtered_path != sample_path:
+                sample_path.unlink()
+
+        write_npt_volume_filter_report(self.workspace, factor, total_stats)
+        self.logger.info(
+            "NPT cell-volume filter: factor=%.3f kept=%s removed=%s",
+            factor,
+            total_stats["kept_count"],
+            total_stats["removed_count"],
+        )
 
     def _select_by_encoding(self, dirs_1):
         sample_xyz_list = glob.glob(os.path.join(self.workspace, MD_WORK_DIR, "*_sample_filter.xyz"))
@@ -383,6 +445,7 @@ class GenerationRunner:
                 self.parameter.get("report_state_population_zero_baseline", False),
                 self.parameter.get("mean_descriptor_enabled", False),
                 self.parameter.get("mean_descriptor_state_population", 0),
+                self.parameter.get("npt_max_cell_volume_filter_factor"),
             )
         elif len(sample_xyz_list) == 1:
             self.logger.info(f"*_sample_filter.xyz already exists.({sample_xyz_list[0]})")
@@ -444,6 +507,19 @@ class GenerationRunner:
         )
 
         if selected_count == 0:
+            npt_filter_report = load_npt_volume_filter_report(self.workspace)
+            if (
+                npt_filter_report
+                and npt_filter_report.get("enabled")
+                and int(npt_filter_report.get("original_selected_count", 0)) > 0
+                and int(npt_filter_report.get("kept_count", 0)) == 0
+            ):
+                self.logger.info(
+                    "All selected candidates were removed by the NPT "
+                    "cell-volume filter. Skip DFT, reuse the current MLIP, "
+                    "and continue to the next generation"
+                )
+                return
             self.logger.info("No structures were selected in this generation. The active learning loop ends")
             touch(str(self.workspace), "__end__")
             return
@@ -471,7 +547,7 @@ class GenerationRunner:
                 remove(item)
             self._submit_scf_jobs(candidate_atoms)
 
-        self.logger.info("In the process of checking whether the SCF calculation is complete......")
+        self.logger.info("Waiting for DFT/SCF tasks to complete...")
         check_finish(
             scf_dir(str(self.workspace)),
             self.logger,
@@ -580,7 +656,17 @@ class GenerationRunner:
         out_name = self.workspace / DFT_WORK_DIR / "scf_filter.xyz"
         ori_out_name = self.workspace / DFT_WORK_DIR / "ori_scf_filter.xyz"
         remove(str(out_name))
-        return self.scf2xyz(str(current), str(out_name), str(ori_out_name), force_threshold)
+        result = self.scf2xyz(str(current), str(out_name), str(ori_out_name), force_threshold)
+        ok_count, len_count, no_success_path, force_count, _ = result
+        if len_count == 0:
+            with open(self.workspace / "no_success_path.json", "w", encoding="utf-8") as handle:
+                json.dump(no_success_path, handle)
+            raise RuntimeError(
+                "No successful SCF structures were collected. "
+                f"completed_tasks={ok_count}, force_threshold_count={force_count}. "
+                f"See {self.workspace / 'no_success_path.json'}"
+            )
+        return result
 
     def _run_scf_stage_without_encoding(self, end_state):
         end_threshold_low, end_threshold_high, end_n, end_cluster_threshold_init, end_k = end_state
@@ -608,7 +694,7 @@ class GenerationRunner:
                     remove(item)
                 self._submit_scf_jobs(total_atom_list)
 
-        self.logger.info("In the process of checking whether the SCF calculation is complete......")
+        self.logger.info("Waiting for DFT/SCF tasks to complete...")
         check_finish(
             scf_dir(str(self.workspace)),
             self.logger,
@@ -650,7 +736,7 @@ class GenerationRunner:
                 remove(item)
             self._submit_scf_jobs(total_atom_list)
 
-        self.logger.info("In the process of checking whether the SCF calculation is complete......")
+        self.logger.info("Waiting for DFT/SCF tasks to complete...")
         check_finish(
             scf_dir(str(self.workspace)),
             self.logger,

@@ -13,6 +13,11 @@ from .cli_defaults import defaults_epilog, get_section_defaults
 from .das.gen_while_loop import check_run_position, gen_while_loop, mkdir
 
 from .bootstrap import WorkspaceBootstrapper
+from .cli_examples import (
+    advanced_command_example_epilog,
+    append_command_example,
+    top_level_epilog,
+)
 from .coverage_pca import add_coverage_pca_subparser, handle_coverage_pca_command
 from .high_precision_cli import (
     add_high_precision_subparsers,
@@ -24,7 +29,7 @@ from .high_precision_cli import (
 )
 from .mp_search import handle_mp_search_command
 from .path_names import DFT_WORK_DIR
-from .runtime_config import load_json_config
+from .runtime_config import build_md_loop_schedule, load_json_config
 
 MANAGED_RUN_CHILD_FLAG = "--managed-run-child"
 PID_FILE_NAME = "pid.txt"
@@ -33,11 +38,12 @@ APP_LOG_FILE_NAME = "app.log"
 ADVANCED_TOP_LEVEL_COMMANDS = {"run-generation", "benchmark-selection", "calibrate-selection"}
 
 
-def _required_epilog(required_text, defaults_section=None):
+def _required_epilog(required_text, defaults_section=None, command=None):
     sections = [f"Required input:\n  {required_text}"]
     if defaults_section:
         sections.append(defaults_epilog(defaults_section))
-    return "\n\n".join(sections)
+    text = "\n\n".join(sections)
+    return append_command_example(text, command) if command else text
 
 
 def _resolve_run_dir_from_config(config_path):
@@ -315,39 +321,25 @@ class DCBFApplication:
         parameter = WorkspaceBootstrapper.apply_parameter_defaults(dict(bootstrapper.config.get("parameter", {})))
         main_loop_npt = workflow.get("main_loop_npt")
         main_loop_nvt = workflow.get("main_loop_nvt")
-        selected_loop = self._select_loop_reference(main_loop_npt, main_loop_nvt)
+        loop_schedule = build_md_loop_schedule(main_loop_npt, main_loop_nvt)
 
-        start_position, gen_num, main_num = check_run_position(str(run_dir), selected_loop)
-        mode = workflow.get("mode", "full-automatic")
+        start_position, gen_num, main_num = check_run_position(str(run_dir), loop_schedule)
         sleep_time = workflow.get("sleep_time", 10)
         max_gen = workflow.get("max_gen", 10)
 
-        if mode == "semi-automatic":
-            for index in range(main_num, len(selected_loop)):
-                npt = main_loop_npt[index] if main_loop_npt is not None and index < len(main_loop_npt) else None
-                nvt = main_loop_nvt[index] if main_loop_nvt is not None and index < len(main_loop_nvt) else None
-                gen_while_loop(str(run_dir), npt, nvt, start_position, gen_num, sleep_time, max_gen)
-                total_scf_structures = _count_main_scf_structures(run_dir, index)
-                _emit_run_summary(
-                    run_dir,
-                    f"[workflow.summary] main_{index} completed. total_scf_structures={total_scf_structures}",
-                )
-        elif mode == "full-automatic":
-            for index in range(main_num, len(selected_loop)):
-                npt = main_loop_npt[index] if main_loop_npt is not None and index < len(main_loop_npt) else None
-                nvt = main_loop_nvt[index] if main_loop_nvt is not None and index < len(main_loop_nvt) else None
-                start_position, gen_num, new_main_num = check_run_position(str(run_dir), selected_loop)
-                gen_while_loop(str(run_dir), npt, nvt, start_position, gen_num, sleep_time, max_gen)
-                total_scf_structures = _count_main_scf_structures(run_dir, index)
-                _emit_run_summary(
-                    run_dir,
-                    f"[workflow.summary] main_{index} completed. total_scf_structures={total_scf_structures}",
-                )
-                if new_main_num < len(selected_loop) - 1:
-                    next_path = run_dir / ("main_" + str(new_main_num + 1)) / "gen_0"
-                    mkdir(str(next_path))
-        else:
-            raise ValueError("workflow.mode must be 'semi-automatic' or 'full-automatic'")
+        for index in range(main_num, len(loop_schedule)):
+            npt = loop_schedule[index]["npt"]
+            nvt = loop_schedule[index]["nvt"]
+            start_position, gen_num, new_main_num = check_run_position(str(run_dir), loop_schedule)
+            gen_while_loop(str(run_dir), npt, nvt, start_position, gen_num, sleep_time, max_gen)
+            total_scf_structures = _count_main_scf_structures(run_dir, index)
+            _emit_run_summary(
+                run_dir,
+                f"[workflow.summary] main_{index} completed. total_scf_structures={total_scf_structures}",
+            )
+            if new_main_num < len(loop_schedule) - 1:
+                next_path = run_dir / ("main_" + str(new_main_num + 1)) / "gen_0"
+                mkdir(str(next_path))
 
         candidate_pool = CandidatePool(run_dir)
         remaining_candidates = candidate_pool.count()
@@ -378,14 +370,6 @@ class DCBFApplication:
             trainer.run()
         ArtifactBundler(bootstrapper.config, run_dir, bootstrapper.config_path).collect()
         return run_dir
-
-    @staticmethod
-    def _select_loop_reference(main_loop_npt, main_loop_nvt):
-        if main_loop_npt is not None:
-            return main_loop_npt
-        if main_loop_nvt is not None:
-            return main_loop_nvt
-        raise ValueError("workflow.main_loop_npt and workflow.main_loop_nvt cannot both be null")
 
     @staticmethod
     def run_generation(workspace):
@@ -491,9 +475,11 @@ class DCBFApplication:
 
 
 def build_parser(include_advanced_commands=True):
-    parser = argparse.ArgumentParser(prog="dcbf")
-    if not include_advanced_commands:
-        parser.epilog = "Use `dcbf -hh` to show advanced commands."
+    parser = argparse.ArgumentParser(
+        prog="dcbf",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=top_level_epilog(include_advanced_commands),
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     add_high_precision_subparsers(subparsers)
     add_coverage_pca_subparser(subparsers)
@@ -503,7 +489,8 @@ def build_parser(include_advanced_commands=True):
         help="copy the bundled example/sample contents into the current directory",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=_required_epilog(
-            "no positional input; run inside the target directory. Existing template files must not already exist."
+            "no positional input; run inside the target directory. Existing template files must not already exist.",
+            command="create-init",
         ),
     )
 
@@ -515,6 +502,7 @@ def build_parser(include_advanced_commands=True):
         epilog=_required_epilog(
             "one or more element symbols; API key via --api-key or `dcbf mp-search set api_key=...`.",
             "mp_search",
+            "mp-search",
         ),
     )
     mp_search_parser.add_argument("items", nargs="*", help='element symbols, or `set key=value ...`')
@@ -538,7 +526,7 @@ def build_parser(include_advanced_commands=True):
         "run",
         help="prepare and launch a DCBF workflow from one JSON file",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=_required_epilog("exactly one DCBF JSON config file."),
+        epilog=_required_epilog("exactly one DCBF JSON config file.", command="run"),
     )
     run_parser.add_argument("config", help="path to the JSON config file")
     run_parser.add_argument("--prepare-only", action="store_true", help="only materialize the workspace files")
@@ -546,7 +534,12 @@ def build_parser(include_advanced_commands=True):
     run_parser.add_argument(MANAGED_RUN_CHILD_FLAG, action="store_true", help=argparse.SUPPRESS)
 
     if include_advanced_commands:
-        generation_parser = subparsers.add_parser("run-generation", help="run one generated workspace iteration")
+        generation_parser = subparsers.add_parser(
+            "run-generation",
+            help="run one generated workspace iteration",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog=advanced_command_example_epilog("run-generation"),
+        )
         generation_parser.add_argument("--workspace", default=".", help="generation workspace path")
 
     reduce_parser = subparsers.add_parser(
@@ -556,7 +549,8 @@ def build_parser(include_advanced_commands=True):
         epilog=_required_epilog(
             "exactly one reduce JSON config file. "
             "Use reduce.mode=candidate_only for candidate-only self-reduction, "
-            "or reduce.mode=reference_guided to select new structures against an existing reference set."
+            "or reduce.mode=reference_guided to select new structures against an existing reference set.",
+            command="reduce",
         ),
     )
     reduce_parser.add_argument("config", help="path to the JSON config file")
@@ -565,7 +559,10 @@ def build_parser(include_advanced_commands=True):
         "kill",
         help="kill the current managed DCBF run from pid.txt",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=_required_epilog("optional run directory or run config path; defaults to the current directory."),
+        epilog=_required_epilog(
+            "optional run directory or run config path; defaults to the current directory.",
+            command="kill",
+        ),
     )
     kill_parser.add_argument(
         "target",
@@ -574,14 +571,24 @@ def build_parser(include_advanced_commands=True):
     )
 
     if include_advanced_commands:
-        benchmark_parser = subparsers.add_parser("benchmark-selection", help="profile the structure-selection hot path")
+        benchmark_parser = subparsers.add_parser(
+            "benchmark-selection",
+            help="profile the structure-selection hot path",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog=advanced_command_example_epilog("benchmark-selection"),
+        )
         benchmark_parser.add_argument(
             "--output",
             default="benchmark_outputs/selection_profile.json",
             help="where to write the JSON benchmark report",
         )
 
-        calibrate_parser = subparsers.add_parser("calibrate-selection", help="verify exact equality with the original min_cover")
+        calibrate_parser = subparsers.add_parser(
+            "calibrate-selection",
+            help="verify exact equality with the original min_cover",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog=advanced_command_example_epilog("calibrate-selection"),
+        )
         calibrate_parser.add_argument(
             "--output",
             default="benchmark_outputs/selection_calibration.json",

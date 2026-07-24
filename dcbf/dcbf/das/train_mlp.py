@@ -120,7 +120,7 @@ def pre_train_mlp(pwd, mlp_nums, ele, ele_model,logger, scheduler):
     else:
         dirs = deepest_dir(pwd, 'train_mlp')
         if len(dirs) != 1:
-            check_finish(dirs, logger, 'All training_mlp tasks have been completed')
+            check_finish(dirs, logger, 'MLIP training completed.')
         else:
             logger.info(f'SUS2 model already exists')
         return False
@@ -165,7 +165,7 @@ def start_train(pwd,task_submission_method, mlp_nums, logger):
             logger.info(f'mlp_{os.path.basename(a)} has been submitted')
         else:
             logger.info(f'mlp_{os.path.basename(a)} is already in training')
-    check_finish(dirs, logger, 'All training_mlp tasks have been completed')
+    check_finish(dirs, logger, 'MLIP training completed.')
 
     mtp_path = os.path.join(pwd, SUS2_MODEL_DIR)
     mkdir(mtp_path)

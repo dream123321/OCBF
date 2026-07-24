@@ -5,6 +5,7 @@ import json
 import shutil
 from pathlib import Path
 
+import numpy as np
 from ase.io import iread, write
 
 from .core_hours import write_core_hours_report
@@ -17,21 +18,21 @@ class ArtifactBundler:
         "output_dir": "summary_bundle",
     }
     DATASET_EXPORTS = {
-        "initial_dataset": {
-            "filename": "initial_dataset.xyz",
-            "description": "Force-threshold-filtered initial dataset used as the workflow input dataset.",
+        "existing_dataset": {
+            "filename": "existing_dataset.xyz",
+            "description": "User-provided existing dataset before optional builder augmentation.",
         },
-        "initial_dataset_raw": {
-            "filename": "initial_dataset_raw.xyz",
-            "description": "Original SCF-collected initial dataset before force-threshold filtering.",
+        "builder_dataset": {
+            "filename": "builder_dataset.xyz",
+            "description": "Unique builder structures actually added to the sampling base dataset.",
         },
         "all_dataset": {
             "filename": "all.xyz",
-            "description": "Final exported dataset containing the full workflow result.",
+            "description": "Final dataset with existing, builder, and DCBF sampling origins annotated.",
         },
         "dcbf_sampling": {
             "filename": "dcbf_sampling.xyz",
-            "description": "Sampling-only dataset derived as all.xyz minus exact matches from initial_dataset.xyz.",
+            "description": "Structures added by the DCBF active-learning sampling loops.",
         },
     }
 
@@ -121,8 +122,48 @@ class ArtifactBundler:
     def _training_config(self):
         return dict(self.config.get("training", {}))
 
+    def _builder_config(self):
+        return dict(self._dataset_config().get("builder") or {})
+
+    def _builder_enabled(self):
+        return bool(self._builder_config().get("enabled", False))
+
+    def _dataset_mode(self):
+        dataset = self._dataset_config()
+        builder = self._builder_config()
+        return str(dataset.get("dataset_mode", builder.get("dataset_mode", "generated_only"))).strip().lower()
+
+    def _resolve_config_path(self, raw_path):
+        path = Path(raw_path)
+        if path.is_absolute():
+            return path
+        return (self.config_path.parent / path).resolve()
+
+    def _existing_dataset_path(self):
+        dataset = self._dataset_config()
+        if self._builder_enabled() and self._dataset_mode() != "augment_existing":
+            return None
+        raw = dataset.get("xyz_input")
+        if not raw:
+            return None
+        path = self._resolve_config_path(raw)
+        if self._builder_enabled() and path == self._builder_output_path():
+            report_path = self._builder_config().get("report_path")
+            if report_path:
+                report_path = Path(report_path)
+                if not report_path.is_absolute():
+                    report_path = (self.run_dir / report_path).resolve()
+                if report_path.exists():
+                    report = json.loads(report_path.read_text(encoding="utf-8"))
+                    existing_path = report.get("existing_dataset_xyz")
+                    if existing_path:
+                        path = Path(existing_path)
+        return path
+
     def _builder_output_path(self):
-        builder = dict(self._dataset_config().get("builder") or {})
+        if not self._builder_enabled():
+            return None
+        builder = self._builder_config()
         raw = builder.get("output_xyz")
         if not raw:
             return None
@@ -131,11 +172,11 @@ class ArtifactBundler:
             return path
         return (self.run_dir / path).resolve()
 
-    def _builder_original_output_path(self):
-        output_path = self._builder_output_path()
-        if output_path is None:
-            return None
-        return output_path.parent / "ori_init_dataset.xyz"
+    def _sampling_base_path(self):
+        builder_output = self._builder_output_path()
+        if builder_output is not None:
+            return builder_output
+        return self._existing_dataset_path()
 
     def _sampling_output_path(self):
         workflow = self._workflow_config()
@@ -144,10 +185,8 @@ class ArtifactBundler:
 
     def _prune_dataset_dir(self, datasets_dir: Path):
         datasets_dir.mkdir(parents=True, exist_ok=True)
-        allowed_names = {spec["filename"] for spec in self.DATASET_EXPORTS.values()}
         for path in datasets_dir.glob("*.xyz"):
-            if path.name not in allowed_names:
-                path.unlink()
+            path.unlink()
 
     def _record_dataset(
         self,
@@ -157,6 +196,8 @@ class ArtifactBundler:
         match_mode: str | None = None,
         derived_from=None,
         main_labels=None,
+        structure_count: int | None = None,
+        data_origin: str | None = None,
     ):
         spec = self.DATASET_EXPORTS[dataset_key]
         record = {
@@ -166,92 +207,206 @@ class ArtifactBundler:
         if match_mode is not None:
             record["match_mode"] = match_mode
         if derived_from is not None:
-            record["derived_from"] = list(derived_from)
+            record["derived_from"] = [
+                item for item in derived_from if item is not None
+            ]
         if main_labels is not None:
             record["main_labels"] = main_labels
+        if structure_count is not None:
+            record["structure_count"] = int(structure_count)
+        if data_origin is not None:
+            record["data_origin"] = data_origin
         self.manifest["datasets"][dataset_key] = record
 
     def _collect_datasets(self):
         datasets_dir = self.bundle_dir / "datasets"
         self._prune_dataset_dir(datasets_dir)
-        initial_dataset = self._builder_output_path()
-        if initial_dataset is None:
-            xyz_input = self._dataset_config().get("xyz_input")
-            if xyz_input:
-                initial_dataset = (self.run_dir / xyz_input).resolve() if not Path(xyz_input).is_absolute() else Path(xyz_input)
-        if initial_dataset is not None:
-            initial_dataset_bundle_path = datasets_dir / self.DATASET_EXPORTS["initial_dataset"]["filename"]
-            self._copy_xyz_with_main_label(
-                initial_dataset,
-                initial_dataset_bundle_path,
-                "datasets.initial_dataset",
-                -1,
-                replace_label=True,
-            )
-            if Path(initial_dataset).exists():
-                self._record_dataset("initial_dataset", initial_dataset_bundle_path, main_labels=[-1])
-
-        original_initial = self._builder_original_output_path()
-        if original_initial is not None:
-            original_initial_bundle_path = datasets_dir / self.DATASET_EXPORTS["initial_dataset_raw"]["filename"]
-            self._copy_xyz_with_main_label(
-                original_initial,
-                original_initial_bundle_path,
-                "datasets.initial_dataset_raw",
-                -1,
-                replace_label=True,
-            )
-            if Path(original_initial).exists():
-                self._record_dataset("initial_dataset_raw", original_initial_bundle_path, main_labels=[-1])
-
+        existing_path = self._existing_dataset_path()
+        sampling_base_path = self._sampling_base_path()
         all_dataset = self._sampling_output_path()
-        all_dataset_bundle_path = datasets_dir / self.DATASET_EXPORTS["all_dataset"]["filename"]
-        self._copy_file(all_dataset, all_dataset_bundle_path, "datasets.all_dataset")
-        if all_dataset.exists():
-            self._record_dataset("all_dataset", all_dataset_bundle_path, main_labels="preserved_from_sampling_output")
+        required_paths = {
+            "sampling_base": sampling_base_path,
+            "all_dataset": all_dataset,
+        }
+        if existing_path is not None:
+            required_paths["existing_dataset"] = existing_path
+        missing_required = {
+            key: str(path)
+            for key, path in required_paths.items()
+            if path is None or not Path(path).exists()
+        }
+        if missing_required:
+            self.manifest["missing"].update(
+                {f"datasets.{key}": path for key, path in missing_required.items()}
+            )
+            return
 
-        if initial_dataset is not None and Path(initial_dataset).exists() and all_dataset.exists():
-            sampling_only_atoms = self._subtract_initial_dataset_strict(all_dataset, initial_dataset)
-            sampling_only_path = datasets_dir / self.DATASET_EXPORTS["dcbf_sampling"]["filename"]
-            self._write_xyz(sampling_only_path, sampling_only_atoms)
-            self.manifest["copied"]["datasets.dcbf_sampling"] = str(sampling_only_path)
-            self._record_dataset(
-                "dcbf_sampling",
-                sampling_only_path,
-                match_mode="strict_exact_geometry",
-                derived_from=[
-                    self.DATASET_EXPORTS["all_dataset"]["filename"],
-                    self.DATASET_EXPORTS["initial_dataset"]["filename"],
-                ],
-                main_labels="preserved_from_all_dataset",
+        existing_atoms = (
+            list(iread(str(existing_path), index=":"))
+            if existing_path is not None
+            else []
+        )
+        sampling_base_atoms = list(iread(str(sampling_base_path), index=":"))
+        all_atoms = list(iread(str(all_dataset), index=":"))
+
+        existing_retained, builder_added = self._split_sampling_base(
+            sampling_base_atoms,
+            existing_atoms,
+        )
+        annotated_all, sampling_only_atoms, unmatched_base_count = self._annotate_all_origins(
+            all_atoms,
+            existing_retained,
+            builder_added,
+        )
+        if unmatched_base_count:
+            raise RuntimeError(
+                "summary dataset split failed: "
+                f"{unmatched_base_count} sampling-base structures are absent from {all_dataset}"
             )
 
-    @staticmethod
-    def _strict_fingerprint_atoms(atoms):
-        return (
-            tuple(atoms.get_chemical_symbols()),
-            tuple(float(value) for value in atoms.get_cell().array.reshape(-1)),
-            tuple(float(value) for value in atoms.get_positions().reshape(-1)),
+        if existing_path is not None:
+            existing_export = [self._annotate(atoms, "existing", main=-1) for atoms in existing_atoms]
+            existing_output = datasets_dir / self.DATASET_EXPORTS["existing_dataset"]["filename"]
+            self._write_xyz(existing_output, existing_export)
+            self.manifest["copied"]["datasets.existing_dataset"] = str(existing_output)
+            self._record_dataset(
+                "existing_dataset",
+                existing_output,
+                main_labels=[-1],
+                structure_count=len(existing_export),
+                data_origin="existing",
+            )
+
+        if self._builder_enabled():
+            builder_output = datasets_dir / self.DATASET_EXPORTS["builder_dataset"]["filename"]
+            builder_export = [self._annotate(atoms, "builder", main=-1) for atoms in builder_added]
+            self._write_xyz(builder_output, builder_export)
+            self.manifest["copied"]["datasets.builder_dataset"] = str(builder_output)
+            self._record_dataset(
+                "builder_dataset",
+                builder_output,
+                match_mode="builder_geometry_fingerprint",
+                derived_from=[Path(sampling_base_path).name],
+                main_labels=[-1],
+                structure_count=len(builder_export),
+                data_origin="builder",
+            )
+
+        sampling_output = datasets_dir / self.DATASET_EXPORTS["dcbf_sampling"]["filename"]
+        self._write_xyz(sampling_output, sampling_only_atoms)
+        self.manifest["copied"]["datasets.dcbf_sampling"] = str(sampling_output)
+        self._record_dataset(
+            "dcbf_sampling",
+            sampling_output,
+            match_mode="builder_geometry_fingerprint",
+            derived_from=[Path(all_dataset).name, Path(sampling_base_path).name],
+            main_labels="preserved_from_all_dataset",
+            structure_count=len(sampling_only_atoms),
+            data_origin="dcbf_sampling",
         )
 
-    def _subtract_initial_dataset_strict(self, all_dataset_path: Path, initial_dataset_path: Path):
-        all_atoms = list(iread(str(all_dataset_path), index=":"))
-        initial_atoms = list(iread(str(initial_dataset_path), index=":"))
-        initial_counter = Counter(self._strict_fingerprint_atoms(atoms) for atoms in initial_atoms)
-        sampling_only_atoms = []
-        for atoms in all_atoms:
-            fingerprint = self._strict_fingerprint_atoms(atoms)
-            if initial_counter[fingerprint] > 0:
-                initial_counter[fingerprint] -= 1
+        all_output = datasets_dir / self.DATASET_EXPORTS["all_dataset"]["filename"]
+        self._write_xyz(all_output, annotated_all)
+        self.manifest["copied"]["datasets.all_dataset"] = str(all_output)
+        self._record_dataset(
+            "all_dataset",
+            all_output,
+            match_mode="builder_geometry_fingerprint",
+            derived_from=[
+                self.DATASET_EXPORTS["existing_dataset"]["filename"]
+                if existing_path is not None
+                else None,
+                self.DATASET_EXPORTS["builder_dataset"]["filename"]
+                if self._builder_enabled()
+                else None,
+                self.DATASET_EXPORTS["dcbf_sampling"]["filename"],
+            ],
+            main_labels="preserved_from_sampling_output",
+            structure_count=len(annotated_all),
+            data_origin="mixed",
+        )
+
+        self.manifest["dataset_counts"] = {
+            "existing_source": len(existing_atoms),
+            "existing_retained_in_sampling_base": len(existing_retained),
+            "existing_duplicates_removed_by_builder": max(
+                0, len(existing_atoms) - len(existing_retained)
+            ),
+            "builder_added": len(builder_added),
+            "sampling_base": len(sampling_base_atoms),
+            "dcbf_sampling": len(sampling_only_atoms),
+            "all": len(annotated_all),
+        }
+
+    @staticmethod
+    def _fingerprint_atoms(atoms):
+        symbols = tuple(atoms.get_chemical_symbols())
+        cell = tuple(np.round(np.asarray(atoms.get_cell()), 8).reshape(-1))
+        scaled = tuple(np.round(atoms.get_scaled_positions(wrap=True), 6).reshape(-1))
+        return symbols, cell, scaled
+
+    @staticmethod
+    def _annotate(atoms, origin, main=None):
+        annotated = atoms.copy()
+        annotated.calc = atoms.calc
+        annotated.info = dict(atoms.info)
+        annotated.info["data_origin"] = origin
+        if main is not None:
+            annotated.info["main"] = main
+        return annotated
+
+    def _split_sampling_base(self, sampling_base_atoms, existing_atoms):
+        existing_counter = Counter(self._fingerprint_atoms(atoms) for atoms in existing_atoms)
+        existing_retained = []
+        builder_added = []
+        default_origin = "builder" if self._builder_enabled() else "existing"
+        for atoms in sampling_base_atoms:
+            fingerprint = self._fingerprint_atoms(atoms)
+            if existing_counter[fingerprint] > 0:
+                existing_counter[fingerprint] -= 1
+                existing_retained.append(atoms)
+            elif default_origin == "existing":
+                existing_retained.append(atoms)
             else:
-                sampling_only_atoms.append(atoms)
-        return sampling_only_atoms
+                builder_added.append(atoms)
+        return existing_retained, builder_added
+
+    def _annotate_all_origins(self, all_atoms, existing_retained, builder_added):
+        origin_counters = {
+            "existing": Counter(
+                self._fingerprint_atoms(atoms) for atoms in existing_retained
+            ),
+            "builder": Counter(
+                self._fingerprint_atoms(atoms) for atoms in builder_added
+            ),
+        }
+        annotated_all = []
+        sampling_only = []
+        for atoms in all_atoms:
+            fingerprint = self._fingerprint_atoms(atoms)
+            if origin_counters["existing"][fingerprint] > 0:
+                origin_counters["existing"][fingerprint] -= 1
+                origin = "existing"
+            elif origin_counters["builder"][fingerprint] > 0:
+                origin_counters["builder"][fingerprint] -= 1
+                origin = "builder"
+            else:
+                origin = "dcbf_sampling"
+            annotated = self._annotate(atoms, origin)
+            annotated_all.append(annotated)
+            if origin == "dcbf_sampling":
+                sampling_only.append(annotated)
+        unmatched = sum(
+            sum(counter.values()) for counter in origin_counters.values()
+        )
+        return annotated_all, sampling_only, unmatched
 
     @staticmethod
     def _write_xyz(path: Path, atoms_list):
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
             path.unlink()
+        path.touch()
         for atoms in atoms_list:
             write(str(path), atoms, format="extxyz", append=True)
 

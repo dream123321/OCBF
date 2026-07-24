@@ -16,7 +16,7 @@
     "dynamic_dq_width": false
   },
   "scheduler": {
-    "sus2_mlp_exe": "/share/home/xill/hj/hj_app/dcbf_continue/dcbf_one-button_deployment/runtime/bin/mlp-sus2"
+    "sus2_mlp_exe": "/work/phy-huangj/hj_mlp/dcbf_one-button_deployment/runtime/bin/mlp-sus2"
   },
   "reduce": {
     "mode": "reference_guided",

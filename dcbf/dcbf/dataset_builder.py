@@ -113,6 +113,7 @@ class DatasetBuildResult:
 class InitialDatasetBuilder:
     DEFAULTS = {
         "enabled": False,
+        "dataset_mode": "generated_only",
         "include_source_structures": False,
         "generation_mode": "configured",
         "output_xyz": "init_dataset/init_dataset.xyz",
@@ -189,6 +190,28 @@ class InitialDatasetBuilder:
         self.scheduler = build_scheduler_spec(normalize_scheduler_config(dict(config["scheduler"])))
         self.output_xyz = self._resolve_output_path(self.builder["output_xyz"])
         self.report_path = self._resolve_output_path(self.builder["report_path"])
+        self.dataset_mode = str(self.builder.get("dataset_mode", "generated_only")).strip().lower()
+        if self.dataset_mode not in {"generated_only", "augment_existing"}:
+            raise ValueError(
+                "dataset.builder.dataset_mode must be 'generated_only' or 'augment_existing'"
+            )
+        self.existing_dataset_xyz = None
+        self._existing_dataset_cache = None
+        if self.dataset_mode == "augment_existing":
+            raw_existing_dataset = self.dataset.get("xyz_input")
+            if not raw_existing_dataset:
+                raise ValueError(
+                    "dataset.xyz_input is required when dataset.builder.dataset_mode is augment_existing"
+                )
+            self.existing_dataset_xyz = self._resolve_config_path(raw_existing_dataset)
+            if not self.existing_dataset_xyz.exists():
+                raise FileNotFoundError(
+                    f"existing dataset does not exist: {self.existing_dataset_xyz}"
+                )
+            if self.existing_dataset_xyz == self.output_xyz:
+                raise ValueError(
+                    "dataset.xyz_input and dataset.builder.output_xyz must be different in augment_existing mode"
+                )
         self.build_root = self.run_dir / "init_dataset_build"
         self.build_workspace = self.build_root / "gen_0"
         self.logger = self._create_logger()
@@ -248,9 +271,11 @@ class InitialDatasetBuilder:
 
         self._prepare_build_root()
         base_structures = self._load_source_structures()
+        existing_dataset = self._load_existing_dataset()
 
         counts = {
             "source_structures": len(base_structures),
+            "existing_dataset_structures": len(existing_dataset),
             "source_candidates": 0,
             "random_displacement_candidates": 0,
             "phonon_displacement_candidates": 0,
@@ -261,6 +286,9 @@ class InitialDatasetBuilder:
             "scf_completed": 0,
             "scf_collected": 0,
             "scf_force_threshold_count": 0,
+            "generated_labeled_structures": 0,
+            "final_dataset_structures": 0,
+            "final_duplicates_removed": 0,
         }
 
         try:
@@ -316,6 +344,8 @@ class InitialDatasetBuilder:
                 "built_at": datetime.now().isoformat(timespec="seconds"),
                 "output_xyz": str(self.output_xyz),
                 "report_path": str(self.report_path),
+                "dataset_mode": self.dataset_mode,
+                "existing_dataset_xyz": str(self.existing_dataset_xyz) if self.existing_dataset_xyz else None,
                 "generation_mode": self.generation_mode,
                 "post_build_action": self.post_build_action,
                 "counts": counts,
@@ -327,6 +357,8 @@ class InitialDatasetBuilder:
                 "built_at": datetime.now().isoformat(timespec="seconds"),
                 "output_xyz": str(self.output_xyz),
                 "report_path": str(self.report_path),
+                "dataset_mode": self.dataset_mode,
+                "existing_dataset_xyz": str(self.existing_dataset_xyz) if self.existing_dataset_xyz else None,
                 "error": str(exc),
                 "generation_mode": self.generation_mode,
                 "post_build_action": self.post_build_action,
@@ -366,10 +398,12 @@ class InitialDatasetBuilder:
 
     def _resume_existing_build(self, resume_state):
         base_structures = self._load_source_structures()
+        existing_dataset = self._load_existing_dataset()
         random_cfg = self.builder["random_displacement"]
         phonon_cfg = self._normalize_phonon_config(random_cfg.get("phonon_displacement"))
         counts = {
             "source_structures": len(base_structures),
+            "existing_dataset_structures": len(existing_dataset),
             "source_candidates": len(base_structures) if self._coerce_bool(self.builder.get("include_source_structures", True), default=True) else 0,
             "random_displacement_candidates": self._count_xyz_frames(self.build_root / "random_displacement.xyz"),
             "phonon_displacement_candidates": self._count_xyz_frames(self.build_root / "phonon_displacement.xyz"),
@@ -380,6 +414,9 @@ class InitialDatasetBuilder:
             "scf_completed": 0,
             "scf_collected": 0,
             "scf_force_threshold_count": 0,
+            "generated_labeled_structures": 0,
+            "final_dataset_structures": 0,
+            "final_duplicates_removed": 0,
         }
         if self._coerce_bool(phonon_cfg.get("include_in_initial_train_set", True), default=True):
             counts["phonon_displacement_in_training_set"] = counts["phonon_displacement_candidates"]
@@ -400,6 +437,8 @@ class InitialDatasetBuilder:
             "built_at": datetime.now().isoformat(timespec="seconds"),
             "output_xyz": str(self.output_xyz),
             "report_path": str(self.report_path),
+            "dataset_mode": self.dataset_mode,
+            "existing_dataset_xyz": str(self.existing_dataset_xyz) if self.existing_dataset_xyz else None,
             "generation_mode": self.generation_mode,
             "post_build_action": self.post_build_action,
             "counts": counts,
@@ -446,6 +485,32 @@ class InitialDatasetBuilder:
         if path.is_absolute():
             return path
         return (self.config_dir / path).resolve()
+
+    def _load_existing_dataset(self):
+        if self.dataset_mode != "augment_existing":
+            return []
+        if self._existing_dataset_cache is not None:
+            return self._existing_dataset_cache
+
+        structures = list(iread(str(self.existing_dataset_xyz), index=":"))
+        if not structures:
+            raise ValueError(f"existing dataset is empty: {self.existing_dataset_xyz}")
+        for index, atoms in enumerate(structures):
+            try:
+                atoms.get_potential_energy()
+                forces = np.asarray(atoms.get_forces())
+            except Exception as exc:
+                raise ValueError(
+                    f"existing dataset frame {index} must contain energy and forces: "
+                    f"{self.existing_dataset_xyz}"
+                ) from exc
+            if forces.shape != (len(atoms), 3):
+                raise ValueError(
+                    f"existing dataset frame {index} has invalid force shape {forces.shape}: "
+                    f"{self.existing_dataset_xyz}"
+                )
+        self._existing_dataset_cache = structures
+        return structures
 
     @staticmethod
     def _default_universal_sus2_model_path():
@@ -509,7 +574,14 @@ class InitialDatasetBuilder:
         if not self.output_xyz.exists() or self.output_xyz.stat().st_size == 0:
             return False
         report = self._load_report()
-        return bool(report and report.get("status") == "completed")
+        if not report or report.get("status") != "completed":
+            return False
+        report_mode = report.get("dataset_mode", "generated_only")
+        if report_mode != self.dataset_mode:
+            return False
+        if self.dataset_mode == "augment_existing":
+            return report.get("existing_dataset_xyz") == str(self.existing_dataset_xyz)
+        return True
 
     def _prepare_build_root(self):
         self.build_root.mkdir(parents=True, exist_ok=True)
@@ -525,6 +597,8 @@ class InitialDatasetBuilder:
             self.build_root / "phonon_displacement.xyz",
             self.build_root / "md_candidates.xyz",
             self.build_root / "candidate_pool.xyz",
+            self.build_root / "generated_labeled.xyz",
+            self.build_root / "ori_generated_labeled.xyz",
             self.output_xyz,
             self.report_path,
         ):
@@ -990,6 +1064,44 @@ class InitialDatasetBuilder:
         self.logger.info("[builder.summary] candidate_pool=%s", self.build_root / "candidate_pool.xyz")
         self.logger.info("=" * 72)
 
+    def _scf_labeled_output_paths(self):
+        if self.dataset_mode == "augment_existing":
+            return (
+                self.build_root / "generated_labeled.xyz",
+                self.build_root / "ori_generated_labeled.xyz",
+            )
+        return (
+            self.output_xyz,
+            self.output_xyz.parent / "ori_init_dataset.xyz",
+        )
+
+    def _finalize_labeled_dataset(self, generated_labeled_structures):
+        generated_count = len(generated_labeled_structures)
+        if self.dataset_mode == "generated_only":
+            return {
+                "generated_labeled_structures": generated_count,
+                "final_dataset_structures": generated_count,
+                "final_duplicates_removed": 0,
+            }
+
+        existing_structures = self._load_existing_dataset()
+        combined = list(existing_structures) + list(generated_labeled_structures)
+        final_structures = self._deduplicate_structures(combined)
+        duplicates_removed = len(combined) - len(final_structures)
+        self._write_xyz(self.output_xyz, final_structures)
+        self.logger.info(
+            "[builder.augment] existing=%s generated_labeled=%s duplicates_removed=%s final=%s",
+            len(existing_structures),
+            generated_count,
+            duplicates_removed,
+            len(final_structures),
+        )
+        return {
+            "generated_labeled_structures": generated_count,
+            "final_dataset_structures": len(final_structures),
+            "final_duplicates_removed": duplicates_removed,
+        }
+
     def _run_scf_labelling(self, structures):
         scf_cfg = self.builder["scf"]
         calc_dir_num = int(scf_cfg.get("calc_dir_num", 5))
@@ -1036,23 +1148,29 @@ class InitialDatasetBuilder:
 
         collector = self._resolve_scf_handler()
         current = workspace / DFT_WORK_DIR / "scf" / "filter"
-        original_output = self.output_xyz.parent / "ori_init_dataset.xyz"
+        labeled_output, original_output = self._scf_labeled_output_paths()
+        if labeled_output.exists():
+            labeled_output.unlink()
         if original_output.exists():
             original_output.unlink()
         ok_count, len_count, no_success_paths, force_count, _ = collector(
             str(current),
-            str(self.output_xyz),
+            str(labeled_output),
             str(original_output),
             force_threshold,
         )
-        if not self.output_xyz.exists() or self.output_xyz.stat().st_size == 0:
+        if not labeled_output.exists() or labeled_output.stat().st_size == 0:
             raise RuntimeError("SCF finished but no labeled initial dataset was collected")
-        labeled_atoms = list(iread(str(self.output_xyz), index=":"))
+        labeled_atoms = list(iread(str(labeled_output), index=":"))
+        final_stats = self._finalize_labeled_dataset(labeled_atoms)
+        if not self.output_xyz.exists() or self.output_xyz.stat().st_size == 0:
+            raise RuntimeError("SCF finished but the final initial dataset was not created")
         self.logger.info(
-            "Initial dataset collected: completed=%s, collected=%s, below_force_threshold=%s",
+            "Initial dataset collected: completed=%s, collected=%s, below_force_threshold=%s, final=%s",
             ok_count,
             len_count,
             force_count,
+            final_stats["final_dataset_structures"],
         )
         if no_success_paths:
             self.logger.warning("Some SCF paths did not collect successfully: %s", len(no_success_paths))
@@ -1070,6 +1188,7 @@ class InitialDatasetBuilder:
             "scf_completed": ok_count,
             "scf_collected": len_count,
             "scf_force_threshold_count": force_count,
+            **final_stats,
         }
 
     def _log_scf_summary(self, input_structures, labeled_structures, effective_calc_dir_num, ok_count, len_count, no_success_paths, force_count):
@@ -1098,10 +1217,12 @@ class InitialDatasetBuilder:
             labeled_summary["atom_count_max"],
             labeled_summary["atom_count_mean"],
         )
+        generated_output, original_output = self._scf_labeled_output_paths()
         self.logger.info(
-            "[builder.summary] labeled_output=%s original_scf_output=%s",
+            "[builder.summary] generated_labeled_output=%s final_output=%s original_scf_output=%s",
+            generated_output,
             self.output_xyz,
-            self.output_xyz.parent / "ori_init_dataset.xyz",
+            original_output,
         )
         if no_success_paths:
             self.logger.warning("[builder.summary] scf_failed_paths=%s", no_success_paths)

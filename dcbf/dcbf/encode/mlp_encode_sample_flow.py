@@ -32,9 +32,54 @@ import glob
 from .data_distri import data_base_distribution
 from .mean_select import mean_pre_sample_flow
 from .selection_core import group_structure_indices_by_interval
+from ..npt_volume_filter import (
+    filter_selected_indices,
+    write_npt_volume_filter_report,
+)
 from ..path_names import MD_WORK_DIR, SUS2_MODEL_DIR
 from ..runtime_config import build_scheduler_spec, load_runtime_config
 import sys
+
+
+def _rates_reach_thresholds(rates, thresholds):
+    if rates is None or len(rates) != len(thresholds):
+        return False
+    return all(float(rate) >= float(threshold) for rate, threshold in zip(rates, thresholds))
+
+
+def _next_md_configurations(
+    configuration_groups,
+    mean_descriptor_enabled,
+    mean_configuration_coverages,
+    body_configuration_coverages,
+    body_list,
+    mean_target,
+    element_targets,
+):
+    next_md_names = []
+    status = {}
+    for config_name in configuration_groups:
+        metric_status = {}
+        enabled_results = []
+        if mean_descriptor_enabled:
+            mean_rates = mean_configuration_coverages.get(config_name)
+            mean_reached = bool(mean_rates) and all(float(rate) >= float(mean_target) for rate in mean_rates)
+            metric_status["mean_descriptor"] = mean_reached
+            enabled_results.append(mean_reached)
+
+        for body in body_list:
+            body_rates = body_configuration_coverages.get(body, {}).get(config_name)
+            body_reached = _rates_reach_thresholds(body_rates, element_targets)
+            metric_status[f"{body}_body"] = body_reached
+            enabled_results.append(body_reached)
+
+        hard_converged = bool(enabled_results) and all(enabled_results)
+        metric_status["hard_converged"] = hard_converged
+        metric_status["next_md"] = not hard_converged
+        status[config_name] = metric_status
+        if not hard_converged:
+            next_md_names.append(config_name)
+    return next_md_names, status
 
 def delete_md_data(md_path,dirs):
     '''删除md相关文件'''
@@ -269,10 +314,17 @@ def main_sample_flow(
     report_state_population_zero_baseline=False,
     mean_descriptor_enabled=False,
     mean_descriptor_state_population=0,
+    npt_max_cell_volume_filter_factor=1.5,
 ):
     runtime_config = load_runtime_config(pwd)
     scheduler = build_scheduler_spec(runtime_config["scheduler"])
-    encoding_cores = int(runtime_config.get("parameter", {}).get("encoding_cores", 2))
+    runtime_parameter = runtime_config.get("parameter", {})
+    encoding_cores = int(runtime_parameter.get("encoding_cores", 2))
+    mean_descriptor_low_coverage_threshold = float(
+        runtime_parameter.get("mean_descriptor_low_coverage_threshold", 90.0)
+    )
+    if not 0.0 <= mean_descriptor_low_coverage_threshold <= 100.0:
+        raise ValueError("mean_descriptor_low_coverage_threshold must be between 0 and 100")
 
     method = dq_width_method
 
@@ -305,7 +357,7 @@ def main_sample_flow(
 
     encode_cfg_parallel(train_cfg, data_out, scheduler.sus2_mlp_exe, mtp_path, encoding_cores, scheduler.train_env)
     dirs_stru_counts = mul_encode(pwd, mtp_path, dirs, 'md.cfg', 'md.out', scheduler.sus2_mlp_exe, scheduler.train_env)
-    logger.info(f'Complete coding process.')
+    logger.info('Descriptor encoding completed.')
 
     ###cfg2xyz
     xyz_out_file_path = os.path.join(md_path, 'md.xyz')
@@ -343,6 +395,7 @@ def main_sample_flow(
     large_no_set_need_index_list = []
     ori_large_no_set_need_index_list = []
     configuration_groups = None
+    body_configuration_coverages = {}
     if coverage_calculation_mode == 'per_configuration':
         configuration_groups = build_configuration_groups(dirs, dirs_stru_counts)
     max_required_coverages = max_element_thresholds(coverage_threshold_schedule, num_ele)
@@ -350,8 +403,9 @@ def main_sample_flow(
     mean_select_index = []
     mean_convergence_result = {"converged": True}
     mean_coverage_rate = 100.0
+    mean_configuration_coverages = {}
     if mean_descriptor_enabled:
-        mean_select_index, mean_convergence_result, mean_coverage_rate = mean_pre_sample_flow(
+        mean_select_index, mean_convergence_result, mean_coverage_rate, mean_configuration_coverages = mean_pre_sample_flow(
             pwd,
             dq_width,
             dq_width_method,
@@ -368,6 +422,7 @@ def main_sample_flow(
             min_coverage_delta=min_coverage_delta,
             state_population=mean_descriptor_state_population,
             report_state_population_zero_baseline=False,
+            mean_descriptor_low_coverage_threshold=mean_descriptor_low_coverage_threshold,
         )
 
     for body in body_list:
@@ -502,6 +557,7 @@ def main_sample_flow(
                         f'(state_population=0): '
                         f'{summarize_configuration_coverages(zero_baseline_detail)}'
                     )
+            body_configuration_coverages[body] = dict(config_coverage_detail)
         else:
             start = time.time()
             _, no_set_index_list, need_index_list, no_set_need_index_list = md_extract(
@@ -621,15 +677,44 @@ def main_sample_flow(
     # print(new_tt)
 
     if mean_descriptor_enabled:
-        select_num_mean_pre_sample,select_num_AEE_sample, intersection, total_select_index = fwss_plus_mean_select_index(lists, min_cover_index, real_stru_num, mean_select_index,mean_coverage_rate,logger)
+        select_num_mean_pre_sample,select_num_AEE_sample, intersection, total_select_index = fwss_plus_mean_select_index(
+            lists,
+            min_cover_index,
+            real_stru_num,
+            mean_select_index,
+            mean_coverage_rate,
+            logger,
+            mean_descriptor_low_coverage_threshold=mean_descriptor_low_coverage_threshold,
+            apply_low_coverage_rule=not (
+                coverage_calculation_mode == 'per_configuration' and configuration_groups
+            ),
+        )
     else:
         select_num_mean_pre_sample = 0
         select_num_AEE_sample = len(new_tt)
         intersection = 0
         total_select_index = new_tt
 
-    '''生成stru_pkl文件，都是不收敛的结构'''
-    mlp_return_strupkl(pwd, dirs, dirs_stru_counts, total_select_index)
+    '''生成stru_pkl文件，都是下一轮仍需采样的结构'''
+    next_md_configuration_names = None
+    if coverage_calculation_mode == 'per_configuration' and configuration_groups:
+        next_md_configuration_names, configuration_status = _next_md_configurations(
+            configuration_groups,
+            mean_descriptor_enabled,
+            mean_configuration_coverages,
+            body_configuration_coverages,
+            body_list,
+            coverage_target_from_schedule(coverage_threshold_schedule),
+            max_required_coverages,
+        )
+        logger.info(f'per_configuration next MD seeds: {next_md_configuration_names}')
+    mlp_return_strupkl(
+        pwd,
+        dirs,
+        dirs_stru_counts,
+        total_select_index,
+        next_md_configuration_names=next_md_configuration_names,
+    )
 
 
     if report_per_configuration_details and coverage_calculation_mode == 'per_configuration' and configuration_groups:
@@ -653,6 +738,26 @@ def main_sample_flow(
 
     if convergence:
         total_select_index = []
+
+    total_select_index, npt_filter_stats = filter_selected_indices(
+        atoms,
+        dirs,
+        dirs_stru_counts,
+        total_select_index,
+        npt_max_cell_volume_filter_factor,
+    )
+    if npt_max_cell_volume_filter_factor is not None:
+        write_npt_volume_filter_report(
+            pwd,
+            npt_max_cell_volume_filter_factor,
+            npt_filter_stats,
+        )
+        logger.info(
+            "NPT cell-volume filter: factor=%.3f kept=%s removed=%s",
+            npt_max_cell_volume_filter_factor,
+            npt_filter_stats["kept_count"],
+            npt_filter_stats["removed_count"],
+        )
     select_atoms = []
 
     for index in total_select_index:

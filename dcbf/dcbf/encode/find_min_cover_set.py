@@ -44,7 +44,25 @@ def fwss(lists, min_cover_index, num):
     return sorted_min_cover_index, count_list, select_sorted_min_cover_index
 
 
-def fwss_plus_mean_select_index(lists, min_cover_index, num, mean_select_index, mean_coverage_rate, logger):
+def select_last_fraction(sorted_indices, num, fraction=0.2):
+    if not sorted_indices:
+        return []
+    fraction_count = max(1, math.ceil(len(sorted_indices) * fraction))
+    budget_count = max(1, int(num))
+    keep_count = min(len(sorted_indices), fraction_count, budget_count)
+    return sorted_indices[-keep_count:]
+
+
+def fwss_plus_mean_select_index(
+    lists,
+    min_cover_index,
+    num,
+    mean_select_index,
+    mean_coverage_rate,
+    logger,
+    mean_descriptor_low_coverage_threshold=90.0,
+    apply_low_coverage_rule=True,
+):
     counter = frequency_counter(lists)
     sorted_min_cover_index = sorted(min_cover_index, key=lambda value: counter[value], reverse=True)
     temp_sorted_min_cover_index = sorted_min_cover_index
@@ -52,9 +70,9 @@ def fwss_plus_mean_select_index(lists, min_cover_index, num, mean_select_index, 
         item for item in sorted_min_cover_index if item not in mean_select_index
     ]
 
-    set_mean_coverage_rate_value = 90
+    set_mean_coverage_rate_value = float(mean_descriptor_low_coverage_threshold)
 
-    if mean_coverage_rate > set_mean_coverage_rate_value:
+    if not apply_low_coverage_rule or mean_coverage_rate >= set_mean_coverage_rate_value:
         aa = num // 5
         bb = num - aa
         if bb == 0:
@@ -67,11 +85,7 @@ def fwss_plus_mean_select_index(lists, min_cover_index, num, mean_select_index, 
         if num >= len(sorted_min_cover_index):
             select_sorted_min_cover_index = sorted_min_cover_index[:num]
     else:
-        if len(sorted_min_cover_index) * 0.2 < num:
-            select_num = math.floor(len(sorted_min_cover_index) * 0.8)
-            select_sorted_min_cover_index = sorted_min_cover_index[select_num:]
-        else:
-            select_sorted_min_cover_index = sorted_min_cover_index[len(sorted_min_cover_index) - num:]
+        select_sorted_min_cover_index = select_last_fraction(sorted_min_cover_index, num)
         logger.info(
             f"mean_coverage_rate is less than {set_mean_coverage_rate_value}%, select the last 20% structure"
         )
