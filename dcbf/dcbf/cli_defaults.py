@@ -80,7 +80,7 @@ CLI_DEFAULTS = {
         "mlip_name": "SUS²",
         "elements": None,
         "keep_temp": False,
-        "force_mode": "magnitude",
+        "force_mode": "components",
         "num_processes": 24,
         "output": "efs.jpg",
         "stress_unit": "eV",

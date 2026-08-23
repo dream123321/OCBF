@@ -437,7 +437,6 @@ class GenerationRunner:
                 self.parameter["coverage_threshold_schedule"],
                 self.parameter["coverage_rate_method"],
                 self.logger,
-                self.parameter.get("coverage_calculation_mode", "per_configuration"),
                 self.parameter.get("report_per_configuration_details", False),
                 self.parameter.get("plateau_generations"),
                 self.parameter.get("min_coverage_delta"),

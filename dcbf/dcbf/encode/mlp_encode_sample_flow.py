@@ -8,7 +8,9 @@ from .coverage_policy import (
     determine_structure_budget,
     ensure_decoded,
     max_element_thresholds,
+    normalize_selection_budget_scope,
     scalar_thresholds_for_mean_descriptor,
+    select_per_configuration_candidates,
     slice_decoded_by_indices,
     summarize_configuration_coverages,
 )
@@ -16,13 +18,25 @@ from .convergence_control import (
     convergence_history_path,
     coverage_target_from_schedule,
     evaluate_metric_convergence,
+    log_plateau_convergence,
     update_metric_history,
 )
-from .mlp_encoding_extract import decode,des_out2pkl
+from .mlp_encoding_extract import des_out2pkl
 from .mean_encoding_extract import mean_des_out2pkl
 import time
 from .coverage_rate import coverage_rate
-from .find_min_cover_set import find_min_cover_set,fwss,fwss_plus_mean_select_index
+from .find_min_cover_set import (
+    find_min_cover_set,
+    fwss,
+    fwss_plus_mean_select_index,
+    rank_min_cover_indices,
+)
+from .dimension_min_cover import (
+    build_dimension_tasks,
+    merge_dimension_tasks,
+    normalize_dimension_min_cover_workers,
+    solve_dimension_tasks,
+)
 import itertools
 from .file_conversion import dump2cfg, cfg2xyz, remove
 from .mlp_mul_encode import mul_encode
@@ -38,7 +52,6 @@ from ..npt_volume_filter import (
 )
 from ..path_names import MD_WORK_DIR, SUS2_MODEL_DIR
 from ..runtime_config import build_scheduler_spec, load_runtime_config
-import sys
 
 
 def _rates_reach_thresholds(rates, thresholds):
@@ -306,7 +319,6 @@ def main_sample_flow(
     coverage_threshold_schedule,
     coverage_rate_method,
     logger,
-    coverage_calculation_mode='global',
     report_per_configuration_details=False,
     plateau_generations=None,
     min_coverage_delta=None,
@@ -320,6 +332,12 @@ def main_sample_flow(
     scheduler = build_scheduler_spec(runtime_config["scheduler"])
     runtime_parameter = runtime_config.get("parameter", {})
     encoding_cores = int(runtime_parameter.get("encoding_cores", 2))
+    dimension_min_cover_workers = normalize_dimension_min_cover_workers(
+        runtime_parameter.get("dimension_min_cover_workers", 0)
+    )
+    selection_budget_scope = normalize_selection_budget_scope(
+        runtime_parameter.get("selection_budget_scope")
+    )
     mean_descriptor_low_coverage_threshold = float(
         runtime_parameter.get("mean_descriptor_low_coverage_threshold", 90.0)
     )
@@ -394,10 +412,14 @@ def main_sample_flow(
     large_zero_threshold_baseline_rate = []
     large_no_set_need_index_list = []
     ori_large_no_set_need_index_list = []
-    configuration_groups = None
+    large_dimension_tasks = []
+    configuration_groups = build_configuration_groups(dirs, dirs_stru_counts)
+    if not configuration_groups:
+        raise RuntimeError(
+            "No configuration groups were built from the sampled MD trajectories"
+        )
     body_configuration_coverages = {}
-    if coverage_calculation_mode == 'per_configuration':
-        configuration_groups = build_configuration_groups(dirs, dirs_stru_counts)
+    configuration_classes = {name: [] for name in configuration_groups}
     max_required_coverages = max_element_thresholds(coverage_threshold_schedule, num_ele)
 
     mean_select_index = []
@@ -416,16 +438,18 @@ def main_sample_flow(
             logger,
             element_count=num_ele,
             configuration_groups=configuration_groups,
-            coverage_calculation_mode=coverage_calculation_mode,
             report_per_configuration_details=report_per_configuration_details,
             plateau_generations=plateau_generations,
             min_coverage_delta=min_coverage_delta,
             state_population=mean_descriptor_state_population,
             report_state_population_zero_baseline=False,
             mean_descriptor_low_coverage_threshold=mean_descriptor_low_coverage_threshold,
+            dimension_min_cover_workers=dimension_min_cover_workers,
+            elements=ele,
         )
 
     for body in body_list:
+        body_dimension_tasks = []
         data_base_data = os.path.join(train_path, f"database_{body}_body_coding_zlib.pkl")
         md_data = os.path.join(md_path, f"md_{body}_body_coding_zlib.pkl")
         md_decoded = ensure_decoded(md_data)
@@ -489,120 +513,98 @@ def main_sample_flow(
                 )
                 zero_coverage_source = md_decoded
 
-        if coverage_calculation_mode == 'per_configuration' and configuration_groups:
-            start = time.time()
-            need_index_list = []
-            no_set_need_index_list = []
-            new_no_set_need_index_list = []
-            config_coverages = []
-            config_coverage_detail = {}
-            zero_config_coverages = []
-            for config_name, structure_indices in configuration_groups.items():
-                config_md_data = slice_decoded_by_indices(md_decoded, structure_indices)
-                _, config_no_set_index_list, config_need_index_list, config_no_set_need_index_list = md_extract(
-                    config_md_data,
-                    large_zero_freq_intervals_list,
-                    large_max_min,
-                    large_bins,
-                )
-                need_index_list.extend(config_need_index_list)
-                no_set_need_index_list.extend(config_no_set_need_index_list)
-                config_coverage_source = slice_decoded_by_indices(coverage_source, structure_indices)
-                config_type_coverage_rate = coverage_rate(
-                    config_coverage_source,
-                    coverage_reference_intervals,
-                    coverage_reference_max_min,
-                    body,
-                    plot_coverage_out_path,
-                    coverage_rate_method,
-                    plot_model=False,
-                    plot_suffix=f'_{config_name}',
-                )
-                config_coverage_detail[config_name] = config_type_coverage_rate
-                if report_state_population_zero_baseline:
-                    zero_rate = coverage_rate(
-                        slice_decoded_by_indices(zero_coverage_source, structure_indices),
-                        zero_reference_intervals,
-                        zero_reference_max_min,
-                        body,
-                        plot_coverage_out_path,
-                        coverage_rate_method,
-                        plot_model=False,
-                        plot_suffix=f'_{config_name}_threshold0_baseline',
-                    )
-                    zero_config_coverages.append([zero_rate])
-                    zero_baseline_detail[config_name] = zero_rate
-                bool_result = [rate < max_required_coverages[index] for index, rate in enumerate(config_type_coverage_rate)]
-                if len(bool_result) != len(config_no_set_index_list):
-                    print('len(bool_result) != len(no_set_index_list)! please check!')
-                    sys.exit(1)
-                config_no_set_index_list = [value if enabled else [] for value, enabled in zip(config_no_set_index_list, bool_result)]
-                for no_set_categories_list in config_no_set_index_list:
-                    for no_set_categories in no_set_categories_list:
-                        new_no_set_need_index_list += no_set_categories
-                config_coverages.append([config_type_coverage_rate])
-            type_coverage_rate = aggregate_element_coverages(config_coverages, num_ele) if config_coverages else [100.0] * num_ele
-            if zero_config_coverages:
-                zero_baseline_rate = aggregate_element_coverages(zero_config_coverages, num_ele)
-            end = time.time()
-            print(f'body_{body}_md_extract_and_type_coverage_rate_time:', end - start)
-            if report_per_configuration_details:
-                logger.info(
-                    f'per_configuration {body}-body coverage: '
-                    f'{summarize_configuration_coverages(config_coverage_detail)}'
-                )
-                if report_state_population_zero_baseline and zero_baseline_detail:
-                    logger.info(
-                        f'per_configuration {body}-body coverage baseline '
-                        f'(state_population=0): '
-                        f'{summarize_configuration_coverages(zero_baseline_detail)}'
-                    )
-            body_configuration_coverages[body] = dict(config_coverage_detail)
-        else:
-            start = time.time()
-            _, no_set_index_list, need_index_list, no_set_need_index_list = md_extract(
-                md_decoded,
+        start = time.time()
+        need_index_list = []
+        no_set_need_index_list = []
+        new_no_set_need_index_list = []
+        config_coverages = []
+        config_coverage_detail = {}
+        zero_config_coverages = []
+        for config_name, structure_indices in configuration_groups.items():
+            config_md_data = slice_decoded_by_indices(md_decoded, structure_indices)
+            _, config_no_set_index_list, config_need_index_list, config_no_set_need_index_list = md_extract(
+                config_md_data,
                 large_zero_freq_intervals_list,
                 large_max_min,
                 large_bins,
             )
-            end = time.time()
-            print(f'body_{body}_md_extract_time:',end-start)
-
-            start = time.time()
-            type_coverage_rate = coverage_rate(
-                coverage_source,
+            need_index_list.extend(config_need_index_list)
+            no_set_need_index_list.extend(config_no_set_need_index_list)
+            config_coverage_source = slice_decoded_by_indices(coverage_source, structure_indices)
+            config_type_coverage_rate = coverage_rate(
+                config_coverage_source,
                 coverage_reference_intervals,
                 coverage_reference_max_min,
                 body,
                 plot_coverage_out_path,
                 coverage_rate_method,
                 plot_model=False,
+                plot_suffix=f'_{config_name}',
             )
+            config_coverage_detail[config_name] = config_type_coverage_rate
             if report_state_population_zero_baseline:
-                zero_baseline_rate = coverage_rate(
-                    zero_coverage_source,
+                zero_rate = coverage_rate(
+                    slice_decoded_by_indices(zero_coverage_source, structure_indices),
                     zero_reference_intervals,
                     zero_reference_max_min,
                     body,
                     plot_coverage_out_path,
                     coverage_rate_method,
                     plot_model=False,
-                    plot_suffix='_threshold0_baseline',
+                    plot_suffix=f'_{config_name}_threshold0_baseline',
                 )
-            end = time.time()
-            print(f'body_{body}_type_coverage_rate_time:',end-start)
-
-            bool_result = [rate < max_required_coverages[index] for index, rate in enumerate(type_coverage_rate)]
-            if len(bool_result) != len(no_set_index_list):
-                print('len(bool_result) != len(no_set_index_list)! please check!')
-                sys.exit(1)
-
-            no_set_index_list = [value if enabled else [] for value, enabled in zip(no_set_index_list, bool_result)]
-            new_no_set_need_index_list = []
-            for no_set_categories_list in no_set_index_list:
+                zero_config_coverages.append([zero_rate])
+                zero_baseline_detail[config_name] = zero_rate
+            bool_result = [
+                rate < max_required_coverages[index]
+                for index, rate in enumerate(config_type_coverage_rate)
+            ]
+            if len(bool_result) != len(config_no_set_index_list):
+                raise RuntimeError(
+                    "Coverage element count does not match descriptor element count"
+                )
+            config_no_set_index_list = [
+                value if enabled else []
+                for value, enabled in zip(config_no_set_index_list, bool_result)
+            ]
+            if dimension_min_cover_workers != 0:
+                config_tasks = (
+                    build_dimension_tasks(
+                        config_no_set_index_list,
+                        body,
+                        ele,
+                        prefix=(str(config_name),),
+                    )
+                    if selection_budget_scope == "per_configuration"
+                    else build_dimension_tasks(
+                        config_no_set_index_list,
+                        body,
+                        ele,
+                    )
+                )
+                body_dimension_tasks.extend(config_tasks)
+            for no_set_categories_list in config_no_set_index_list:
                 for no_set_categories in no_set_categories_list:
                     new_no_set_need_index_list += no_set_categories
+                    configuration_classes[config_name].extend(no_set_categories)
+            config_coverages.append([config_type_coverage_rate])
+        type_coverage_rate = aggregate_element_coverages(config_coverages, num_ele) if config_coverages else [100.0] * num_ele
+        if zero_config_coverages:
+            zero_baseline_rate = aggregate_element_coverages(zero_config_coverages, num_ele)
+        end = time.time()
+        print(f'body_{body}_md_extract_and_type_coverage_rate_time:', end - start)
+        if report_per_configuration_details:
+            logger.info(
+                f'per_configuration {body}-body coverage: '
+                f'{summarize_configuration_coverages(config_coverage_detail)}'
+            )
+            if report_state_population_zero_baseline and zero_baseline_detail:
+                logger.info(
+                    f'per_configuration {body}-body coverage baseline '
+                    f'(state_population=0): '
+                    f'{summarize_configuration_coverages(zero_baseline_detail)}'
+                )
+        body_configuration_coverages[body] = dict(config_coverage_detail)
 
         large_need_index_list.append(need_index_list)
         large_classes_num.append(len(need_index_list))
@@ -614,13 +616,75 @@ def main_sample_flow(
         large_no_set_need_index_list.append(new_no_set_need_index_list)
         ori_large_no_set_need_index_list.append(no_set_need_index_list)
 
-        tt = find_min_cover_set(no_set_need_index_list)
+        if dimension_min_cover_workers == 0:
+            tt = find_min_cover_set(no_set_need_index_list)
+        else:
+            tt = []
+            large_dimension_tasks.extend(
+                body_dimension_tasks
+                if selection_budget_scope == "per_configuration"
+                else merge_dimension_tasks(body_dimension_tasks)
+            )
 
         large_min_cover_stru_index.append(tt)
         large_min_cover_stru.append(len(tt))
         large_type_coverage_rate.append(type_coverage_rate)
         if zero_baseline_rate is not None:
             large_zero_threshold_baseline_rate.append(zero_baseline_rate)
+
+    split_min_cover_index = None
+    if dimension_min_cover_workers != 0:
+        split_min_cover_index, split_stats, selected_by_task = solve_dimension_tasks(
+            large_dimension_tasks,
+            dimension_min_cover_workers,
+        )
+        if (
+            split_stats.get("task_count", 0) > 0
+            and dimension_min_cover_workers == -1
+            and split_stats.get("scheduler") is None
+        ):
+            logger.warning(
+                "No scheduler allocation was detected; "
+                "dimension_min_cover_workers=-1 uses affinity-visible CPUs."
+            )
+        split_min_cover_set = set(split_min_cover_index)
+        for body_index, body in enumerate(body_list):
+            body_selected = sorted(
+                {
+                    index
+                    for key, selected in selected_by_task.items()
+                    if key
+                    and (
+                        (selection_budget_scope == "per_configuration" and len(key) >= 2 and key[1] == str(body))
+                        or (selection_budget_scope == "all_configurations" and key[0] == str(body))
+                    )
+                    for index in selected
+                    if index in split_min_cover_set
+                }
+            )
+            large_min_cover_stru_index[body_index] = body_selected
+            large_min_cover_stru[body_index] = len(body_selected)
+
+    per_configuration_aee_candidates = {}
+    if selection_budget_scope == "per_configuration":
+        for config_name in configuration_groups:
+            config_lists = configuration_classes[config_name]
+            if dimension_min_cover_workers == 0:
+                config_min_cover = find_min_cover_set(config_lists)
+            else:
+                config_min_cover = sorted(
+                    {
+                        index
+                        for key, selected in selected_by_task.items()
+                        if key and key[0] == str(config_name)
+                        for index in selected
+                        if index in split_min_cover_set
+                    }
+                )
+            per_configuration_aee_candidates[config_name] = rank_min_cover_indices(
+                config_lists,
+                config_min_cover,
+            )
 
     '''每个body总计多少类'''
     f_1 = f'The number of classes:{large_classes_num}'
@@ -635,7 +699,10 @@ def main_sample_flow(
     '''一个类中可以出现多个结构的index,每个结构累计频次多，说明结构越重要'''
     lists = list(itertools.chain(*large_no_set_need_index_list))
     print(f'num of ori_classes:{len(lists)}, num of current_classes (some type_atom have a weight of 0, delete these structure classes): {len(list(itertools.chain(*ori_large_no_set_need_index_list)))}')
-    min_cover_index = find_min_cover_set(lists)
+    if dimension_min_cover_workers == 0:
+        min_cover_index = find_min_cover_set(lists)
+    else:
+        min_cover_index = split_min_cover_index
 
     '''认为收敛的标准'''
     element_coverages = aggregate_element_coverages([large_type_coverage_rate], num_ele)
@@ -676,7 +743,30 @@ def main_sample_flow(
     atoms = list(iread(xyz_out_file_path))
     # print(new_tt)
 
-    if mean_descriptor_enabled:
+    if selection_budget_scope == "per_configuration":
+        total_select_index, _ = select_per_configuration_candidates(
+            configuration_groups,
+            body_configuration_coverages,
+            body_list,
+            per_configuration_aee_candidates,
+            mean_select_index,
+            mean_configuration_coverages,
+            mean_descriptor_enabled,
+            selection_budget_schedule,
+            coverage_threshold_schedule,
+            num_ele,
+        )
+        mean_selected_set = set(mean_select_index)
+        aee_selected_set = {
+            index
+            for candidates in per_configuration_aee_candidates.values()
+            for index in candidates
+            if index in total_select_index
+        }
+        select_num_mean_pre_sample = len(mean_selected_set.intersection(total_select_index))
+        select_num_AEE_sample = len(aee_selected_set)
+        intersection = len(mean_selected_set.intersection(aee_selected_set))
+    elif mean_descriptor_enabled:
         select_num_mean_pre_sample,select_num_AEE_sample, intersection, total_select_index = fwss_plus_mean_select_index(
             lists,
             min_cover_index,
@@ -685,9 +775,7 @@ def main_sample_flow(
             mean_coverage_rate,
             logger,
             mean_descriptor_low_coverage_threshold=mean_descriptor_low_coverage_threshold,
-            apply_low_coverage_rule=not (
-                coverage_calculation_mode == 'per_configuration' and configuration_groups
-            ),
+            apply_low_coverage_rule=False,
         )
     else:
         select_num_mean_pre_sample = 0
@@ -696,18 +784,16 @@ def main_sample_flow(
         total_select_index = new_tt
 
     '''生成stru_pkl文件，都是下一轮仍需采样的结构'''
-    next_md_configuration_names = None
-    if coverage_calculation_mode == 'per_configuration' and configuration_groups:
-        next_md_configuration_names, configuration_status = _next_md_configurations(
-            configuration_groups,
-            mean_descriptor_enabled,
-            mean_configuration_coverages,
-            body_configuration_coverages,
-            body_list,
-            coverage_target_from_schedule(coverage_threshold_schedule),
-            max_required_coverages,
-        )
-        logger.info(f'per_configuration next MD seeds: {next_md_configuration_names}')
+    next_md_configuration_names, _ = _next_md_configurations(
+        configuration_groups,
+        mean_descriptor_enabled,
+        mean_configuration_coverages,
+        body_configuration_coverages,
+        body_list,
+        coverage_target_from_schedule(coverage_threshold_schedule),
+        max_required_coverages,
+    )
+    logger.info(f'per_configuration next MD seeds: {next_md_configuration_names}')
     mlp_return_strupkl(
         pwd,
         dirs,
@@ -717,13 +803,13 @@ def main_sample_flow(
     )
 
 
-    if report_per_configuration_details and coverage_calculation_mode == 'per_configuration' and configuration_groups:
+    if report_per_configuration_details:
         logger.info(
             f'per_configuration final selected_count: '
             f'{count_selected_by_configuration(total_select_index, configuration_groups)}'
         )
     else:
-        process_name = 'AEE_sampling' if coverage_calculation_mode == 'per_configuration' else 'ocbf_sampling'
+        process_name = 'AEE_sampling'
         '''出现结构的最大频次和最小频次'''
         try:
             logger.info(f'Complete the {process_name} process. {f_1} {f_2} {f_3} {f_4} max_min_freq: {[max(fw), min(fw)]}')
@@ -737,6 +823,14 @@ def main_sample_flow(
     logger.info(f'num of select_num_mean_pre_sample:{select_num_mean_pre_sample}, num of select_num_AEE_sample:{select_num_AEE_sample}, num of repetition:{intersection}, total_num:{len(total_select_index)}')
 
     if convergence:
+        log_plateau_convergence(
+            logger,
+            encoding_convergence_result,
+            mean_convergence_result,
+            mean_descriptor_enabled,
+            plateau_generations,
+            min_coverage_delta,
+        )
         total_select_index = []
 
     total_select_index, npt_filter_stats = filter_selected_indices(
@@ -837,8 +931,6 @@ if __name__ == '__main__':
     #     print(f'type_coverage_rate:{type_coverage_rate}')
     # tt = find_min_cover_set(large_need_index_list)
     # print(len(tt))
-
-
 
 
 

@@ -14,6 +14,9 @@ Minimal meaning:
 - `output_xyz`: selected representative structures
 - `remain_xyz`: candidate structures not selected
 
+The bundled universal Reduce potential is an 84-element `l2k3` model. This Si
+example keeps using its explicit local Si model instead.
+
 In this Si example:
 
 ```bash
@@ -35,9 +38,24 @@ Minimal meaning:
 - `output_xyz`: `current_xyz` plus newly selected candidate structures when `append_current=true`
 - `remain_xyz`: candidate structures not selected
 
+`reduce.chunk_size` defaults to `1000000`; set it explicitly only when a
+smaller batch is needed for memory control.
+
 In this Si example:
 
 ```bash
 cd reference_guided
 dcbf reduce reduce.reference_guided.Si.json
 ```
+
+## XYZ I/O mode
+
+`reduce.xyz_io_mode` defaults to `fast_extxyz`. It indexes standard EXTXYZ frames by byte range, copies selected frames without reserializing them, and writes CFG shards in parallel with `encoding_cores`. This is faster and uses much less memory than loading the full dataset as `ase.Atoms` objects, while retaining the original headers, labels, and numeric text.
+
+- `fast_extxyz`: strict and fastest; incompatible input raises an explicit error.
+- `auto`: prefers the fast path and falls back to ASE with a warning when needed.
+- `ase`: forces the original ASE implementation for compatibility or comparison.
+
+## Dimension-level minimum cover
+
+`reduce.dimension_min_cover_workers` defaults to `-1`, using all CPUs allocated or visible on the current node. Set it to `0` for the original joint cover, `1` for serial per-dimension cover, or a positive integer for limited parallel workers. Every nonzero mode automatically unions the independently selected structures and applies global reverse pruning while preserving all coverage and population requirements. The result may still differ from the joint solver.

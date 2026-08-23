@@ -21,6 +21,22 @@ Minimal meaning:
 - `output_xyz`: selected representative structures
 - `remain_xyz`: candidate structures not selected
 
+When the bundled universal potential is selected, Reduce uses the 84-element
+`l2k3` model shipped with DCBF. Custom models and explicit element mappings
+continue to take precedence.
+
+## XYZ I/O mode
+
+`reduce.xyz_io_mode` controls how Reduce reads, splits, and converts structure files. The default `fast_extxyz` uses a byte-range frame index, copies selected EXTXYZ blocks without rewriting them, and generates CFG shards in parallel with `encoding_cores`. This avoids building one in-memory `ase.Atoms` list for the full dataset and substantially reduces time and memory for large databases while preserving the original headers, labels, and numeric text.
+
+- `fast_extxyz`: strict and fastest; requires standard EXTXYZ with `Lattice`, element information, and positions in `Properties`.
+- `auto`: prefers the fast path but warns and falls back to ASE for unsupported XYZ/EXTXYZ or `.traj` input.
+- `ase`: always uses the original ASE read, split, rewrite, and CFG-conversion path.
+
+## Dimension-level minimum cover
+
+`reduce.dimension_min_cover_workers` controls the minimum-cover strategy. The default `-1` uses all CPUs allocated or visible on the current node. Use `0` for the original joint cover, `1` for serial per-dimension cover, or a positive integer for that many worker processes. Every nonzero mode automatically takes the per-dimension union and then applies deterministic global reverse pruning. A structure is removed only when every original coverage or population target remains satisfied. The result can still differ from the original joint solver.
+
 ## reference_guided reduce
 
 `reference_guided` reduces a new candidate dataset against an existing reference/training dataset. It uses the reference set to decide which candidate structures add new descriptor-space coverage.
@@ -40,3 +56,7 @@ Minimal meaning:
 - `input_xyz`: new candidate structures, for example `md.xyz`
 - `output_xyz`: `current_xyz` plus newly selected candidate structures when `append_current=true`
 - `remain_xyz`: candidate structures not selected
+
+`reduce.chunk_size` defaults to `1000000`. It controls how many candidate
+structures are handled in each reference-guided batch; an explicit JSON value
+still overrides this default.

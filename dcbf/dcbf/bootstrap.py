@@ -14,6 +14,10 @@ import yaml
 
 from .dataset_builder import InitialDatasetBuilder
 from .das.file_conversion import cfg2xyz
+from .encode.coverage_policy import (
+    normalize_selection_budget_scope,
+    validate_selection_schedules,
+)
 from .mtp import normalize_mtp_type
 from .npt_volume_filter import normalize_npt_max_cell_volume_filter_factor
 from .path_names import DFT_WORK_DIR
@@ -33,12 +37,13 @@ class WorkspaceBootstrapper:
         "selection_budget_schedule",
         "coverage_threshold_schedule",
         "coverage_rate_method",
-        "coverage_calculation_mode",
+        "selection_budget_scope",
         "report_per_configuration_details",
         "candidate_trigger",
         "plateau_generations",
         "min_coverage_delta",
         "mean_descriptor_low_coverage_threshold",
+        "dimension_min_cover_workers",
     )
     REMOVED_PARAMETER_RENAMES = {
         "coverage_count_threshold": "state_population",
@@ -87,14 +92,16 @@ class WorkspaceBootstrapper:
         },
         "mlp_encode_model": True,
         "encoding_cores": 2,
+        "dimension_min_cover_workers": 4,
         "dq_width_method": "Freedman_Diaconis",
         "dq_width": 0.01,
         "dq_width_factor": 1.0,
         "body_list": ["two", "three"],
         "mtp_type": "l2k2",
-         "selection_budget_schedule": [20, 15, 10],
+         "selection_budget_schedule": [12, 8, 5],
          "coverage_threshold_schedule": [99.5, 99.9, 99.95],
          "coverage_rate_method": "mean",
+         "selection_budget_scope": "per_configuration",
          "candidate_trigger": 10,
          "state_population": 0,
          "report_state_population_zero_baseline": False,
@@ -103,7 +110,6 @@ class WorkspaceBootstrapper:
          "mean_descriptor_low_coverage_threshold": 90.0,
          "plateau_generations": None,
          "min_coverage_delta": None,
-         "coverage_calculation_mode": "per_configuration",
         "report_per_configuration_details": True,
         "dft": {
             "calc_dir_num": 5,
@@ -187,8 +193,23 @@ class WorkspaceBootstrapper:
     def _normalize_structure_selection(cls, raw_selection):
         selection = dict(raw_selection or {})
         common = dict(selection.get("common") or {})
+        legacy_coverage_mode = "coverage_calculation_mode" in common
+        common.pop("coverage_calculation_mode", None)
+        common.pop("dimension_min_cover_global_prune", None)
         dft = dict(selection.get("dft") or {})
-        modes = dict(selection.get("modes") or {})
+        modes = {}
+        for mode_name, raw_mode_config in dict(selection.get("modes") or {}).items():
+            mode_config = dict(raw_mode_config or {})
+            if "coverage_calculation_mode" in mode_config:
+                legacy_coverage_mode = True
+                mode_config.pop("coverage_calculation_mode", None)
+            modes[mode_name] = mode_config
+        if legacy_coverage_mode:
+            warnings.warn(
+                "coverage_calculation_mode is no longer used; coverage is always "
+                "calculated per configuration.",
+                RuntimeWarning,
+            )
         cls._reject_removed_parameter_keys("sampling.structure_selection.common", common)
         misplaced_common_keys = [key for key in cls.MLP_ENCODE_MODEL_ONLY_KEYS if key in common]
         if misplaced_common_keys:
@@ -222,6 +243,7 @@ class WorkspaceBootstrapper:
 
         mode_config = dict(modes.get(active_mode) or {})
         mode_config.pop("enabled", None)
+        mode_config.pop("dimension_min_cover_global_prune", None)
         parameter = {}
         parameter.update(common)
         parameter.update(mode_config)
@@ -452,11 +474,36 @@ class WorkspaceBootstrapper:
                 "dq_width_method / dq_width / dq_width_factor instead."
             )
         parameter = self.apply_parameter_defaults(raw_parameter)
+        parameter.pop("dimension_min_cover_global_prune", None)
         parameter.pop("init_threshold", None)
         parameter.pop("threshold_coff", None)
         parameter["ele"] = elements
         parameter["sort_ele"] = True
         parameter["encoding_cores"] = int(parameter.get("encoding_cores", 2))
+        raw_min_cover_workers = parameter.get("dimension_min_cover_workers", 4)
+        if isinstance(raw_min_cover_workers, bool):
+            raise ValueError("dimension_min_cover_workers must be an integer")
+        try:
+            parameter["dimension_min_cover_workers"] = int(raw_min_cover_workers)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("dimension_min_cover_workers must be an integer") from exc
+        if (
+            isinstance(raw_min_cover_workers, float)
+            and not raw_min_cover_workers.is_integer()
+        ):
+            raise ValueError("dimension_min_cover_workers must be an integer")
+        if parameter["dimension_min_cover_workers"] < -1:
+            raise ValueError(
+                "dimension_min_cover_workers must be -1, 0, or a positive integer"
+            )
+        parameter["selection_budget_scope"] = normalize_selection_budget_scope(
+            parameter.get("selection_budget_scope")
+        )
+        parameter["selection_budget_schedule"], _ = validate_selection_schedules(
+            parameter["selection_budget_schedule"],
+            parameter["coverage_threshold_schedule"],
+            len(elements),
+        )
         parameter["dq_width"] = float(parameter.get("dq_width", 0.01))
         parameter["dq_width_factor"] = float(parameter.get("dq_width_factor", 1.0))
         parameter["mean_descriptor_low_coverage_threshold"] = float(
@@ -474,6 +521,13 @@ class WorkspaceBootstrapper:
     @classmethod
     def normalize_parameter_keys(cls, parameter):
         normalized = dict(parameter)
+        if "coverage_calculation_mode" in normalized:
+            warnings.warn(
+                "coverage_calculation_mode is no longer used; coverage is always "
+                "calculated per configuration.",
+                RuntimeWarning,
+            )
+            normalized.pop("coverage_calculation_mode", None)
         if "ele_model" in normalized and "sort_ele" not in normalized:
             normalized["sort_ele"] = int(normalized["ele_model"]) == 1
         if "stru_num" in normalized and "selection_budget_schedule" not in normalized:

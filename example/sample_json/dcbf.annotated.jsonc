@@ -115,8 +115,9 @@
       "scf_ptile": 56,
       "scf_cal_engine": "vasp",
       "submission_backend": "bsub",
-      "dft_env": "export VASP_HOME=/share/software/vasp/6.5.1.intel.2023.2.0\nexport INTEL_ONEAPI=/share/intel/2022.2.0\nexport HDF5_ROOT=/share/libraries/hdf5/1.14.6.oneapi.2023.2.0\nexport PATH=\"$VASP_HOME/bin:$INTEL_ONEAPI/mpi/2021.6.0/bin:$INTEL_ONEAPI/compiler/2022.1.0/linux/bin/intel64:$INTEL_ONEAPI/compiler/2022.1.0/linux/bin:$PATH\"\nexport LD_LIBRARY_PATH=\"$HDF5_ROOT/lib:$INTEL_ONEAPI/mkl/2022.1.0/lib/intel64:$INTEL_ONEAPI/mpi/2021.6.0/lib/release:$INTEL_ONEAPI/mpi/2021.6.0/lib:$INTEL_ONEAPI/mpi/2021.6.0/libfabric/lib:$INTEL_ONEAPI/compiler/2022.1.0/linux/compiler/lib/intel64_lin:${LD_LIBRARY_PATH:-}\"\nexport FI_PROVIDER_PATH=\"$INTEL_ONEAPI/mpi/2021.6.0/libfabric/lib/prov\"\nulimit -s unlimited\nexport OMP_NUM_THREADS=1\nexport MKL_NUM_THREADS=1\nexport OMP_STACKSIZE=512M\nexport KMP_STACKSIZE=512M\nexport HDF5_USE_FILE_LOCKING=FALSE",
-      "dft_command": "/share/intel/2022.2.0/mpi/2021.6.0/bin/mpirun -np $NP /share/software/vasp/6.5.1.intel.2023.2.0/bin/vasp_std"
+      "dft_clean_dcbf_environment": false, // set true to clear bundled DCBF environment before dft_env
+      "dft_env": "module purge\nmodule load vasp/5.4.4",
+      "dft_command": "mpirun -np $NP vasp_std"
     },
     "structure_selection": {
       "common": {
@@ -130,7 +131,8 @@
       "modes": {
         "mlp_encode_model": {
           "enabled": true,
-          "encoding_cores": 2,
+          "encoding_cores": 4,
+          "dimension_min_cover_workers": 4, // 0=joint, 1=serial per-dimension, -1=all allocated CPUs, N=max N workers
           "dq_width_method": "Freedman_Diaconis",
           "dq_width": 0.01, // only used when dq_width_method = "self_input"
           "dq_width_factor": 1.0,
@@ -138,10 +140,11 @@
             "two",
             "three"
           ],
+          "selection_budget_scope": "per_configuration", // per seed by default; all_configurations shares one round budget
           "selection_budget_schedule": [
-            20,
-            15,
-            10
+            12,
+            8,
+            5
           ],
           "coverage_threshold_schedule": [
             99.5,
@@ -149,7 +152,6 @@
             99.92
           ],
           "coverage_rate_method": "mean",
-          "coverage_calculation_mode": "per_configuration",
           "report_per_configuration_details": true,
           "candidate_trigger": 10,
           "plateau_generations": 7,

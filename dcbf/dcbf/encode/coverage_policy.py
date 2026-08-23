@@ -1,10 +1,83 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+import math
 from numbers import Real
 import os
 
 from .mlp_encoding_extract import decode
+
+
+SELECTION_BUDGET_SCOPES = {"per_configuration", "all_configurations"}
+
+
+def normalize_selection_budget_scope(value):
+    scope = "per_configuration" if value is None else str(value).strip().lower()
+    if scope not in SELECTION_BUDGET_SCOPES:
+        raise ValueError(
+            "selection_budget_scope must be 'per_configuration' or "
+            "'all_configurations'"
+        )
+    return scope
+
+
+def validate_selection_schedules(stru_num, coverage_rate_threshold, element_count):
+    if element_count < 1:
+        raise ValueError("selection schedules require at least one element")
+    try:
+        budgets = list(stru_num)
+        thresholds = list(coverage_rate_threshold)
+    except TypeError as exc:
+        raise ValueError(
+            "selection_budget_schedule and coverage_threshold_schedule must be lists"
+        ) from exc
+    if not budgets or len(budgets) != len(thresholds):
+        raise ValueError(
+            "selection_budget_schedule and coverage_threshold_schedule must be "
+            "non-empty and have the same length"
+        )
+    normalized_budgets = []
+    for value in budgets:
+        if isinstance(value, bool):
+            raise ValueError("selection_budget_schedule entries must be non-negative integers")
+        try:
+            budget = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "selection_budget_schedule entries must be non-negative integers"
+            ) from exc
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError("selection_budget_schedule entries must be non-negative integers")
+        if budget < 0:
+            raise ValueError("selection_budget_schedule entries must be non-negative integers")
+        normalized_budgets.append(budget)
+
+    normalized_thresholds, _ = normalize_coverage_thresholds(thresholds, element_count)
+    for row in normalized_thresholds:
+        if any(not math.isfinite(value) or not 0.0 <= value <= 100.0 for value in row):
+            raise ValueError(
+                "coverage_threshold_schedule entries must be finite numbers between 0 and 100"
+            )
+    for element_index in range(element_count):
+        values = [row[element_index] for row in normalized_thresholds]
+        if any(current < previous for previous, current in zip(values, values[1:])):
+            raise ValueError("coverage_threshold_schedule must be non-decreasing for every element")
+    return normalized_budgets, normalized_thresholds
+
+
+def stable_unique(indices):
+    seen = set()
+    output = []
+    for raw_index in indices:
+        index = int(raw_index)
+        if index not in seen:
+            seen.add(index)
+            output.append(index)
+    return output
+
+
+def strict_budget_selection(indices, budget):
+    return stable_unique(indices)[: max(0, int(budget))]
 
 
 def ensure_decoded(data_or_path):
@@ -14,22 +87,28 @@ def ensure_decoded(data_or_path):
 
 
 def _as_float_list(values):
-    return [float(value) for value in values]
+    output = []
+    for value in values:
+        if isinstance(value, bool):
+            raise ValueError("coverage_threshold_schedule entries must be finite numbers")
+        output.append(float(value))
+    return output
 
 
 def normalize_coverage_thresholds(coverage_rate_threshold, element_count):
     normalized = []
     scalar_mode = True
     for stage in coverage_rate_threshold:
+        if isinstance(stage, bool):
+            raise ValueError("coverage_threshold_schedule entries must be finite numbers")
         if isinstance(stage, Real):
             row = [float(stage)] * element_count
         else:
             row = _as_float_list(stage)
-            if len(row) == 1:
-                row = row * element_count
-            elif len(row) != element_count:
+            if len(row) != element_count:
                 raise ValueError(
-                    f"coverage_rate_threshold inner length must be 1 or {element_count}, got {len(row)}"
+                    "coverage_threshold_schedule element-resolved row length must "
+                    f"equal the element count {element_count}, got {len(row)}"
                 )
             scalar_mode = False
         normalized.append(row)
@@ -37,14 +116,15 @@ def normalize_coverage_thresholds(coverage_rate_threshold, element_count):
 
 
 def determine_structure_budget(element_coverages, stru_num, coverage_rate_threshold):
-    normalized_thresholds, scalar_mode = normalize_coverage_thresholds(coverage_rate_threshold, len(element_coverages))
-
+    stru_num, normalized_thresholds = validate_selection_schedules(
+        stru_num,
+        coverage_rate_threshold,
+        len(element_coverages),
+    )
     stage_pairs = list(zip(normalized_thresholds, stru_num))
-    if scalar_mode:
-        stage_pairs.sort(key=lambda item: item[0][0])
 
     max_thresholds = [max(stage[element_index] for stage in normalized_thresholds) for element_index in range(len(element_coverages))]
-    convergence = all(coverage > threshold for coverage, threshold in zip(element_coverages, max_thresholds))
+    convergence = all(coverage >= threshold for coverage, threshold in zip(element_coverages, max_thresholds))
 
     real_stru_num = 0
     for thresholds, budget in stage_pairs:
@@ -67,6 +147,60 @@ def aggregate_element_coverages(coverage_batches, element_count):
             for element_index, rate in enumerate(body_rates):
                 element_coverages[element_index] = min(element_coverages[element_index], float(rate))
     return element_coverages
+
+
+def select_per_configuration_candidates(
+    configuration_groups,
+    body_configuration_coverages,
+    body_list,
+    aee_candidates,
+    mean_candidates,
+    mean_configuration_coverages,
+    mean_descriptor_enabled,
+    selection_budget_schedule,
+    coverage_threshold_schedule,
+    element_count,
+):
+    selected = []
+    budgets = OrderedDict()
+    mean_thresholds = scalar_thresholds_for_mean_descriptor(
+        coverage_threshold_schedule,
+        element_count,
+    )
+    for config_name, structure_indices in configuration_groups.items():
+        body_rates = [
+            body_configuration_coverages.get(body, {}).get(config_name)
+            for body in body_list
+        ]
+        body_rates = [rates for rates in body_rates if rates]
+        element_coverages = aggregate_element_coverages(
+            [[rates] for rates in body_rates],
+            element_count,
+        )
+        budget, _, _ = determine_structure_budget(
+            element_coverages,
+            selection_budget_schedule,
+            coverage_threshold_schedule,
+        )
+        if mean_descriptor_enabled:
+            mean_rates = mean_configuration_coverages.get(config_name) or [100.0]
+            mean_budget, _, _ = determine_structure_budget(
+                [min(float(rate) for rate in mean_rates)],
+                selection_budget_schedule,
+                mean_thresholds,
+            )
+            budget = max(budget, mean_budget)
+
+        config_index_set = set(structure_indices)
+        config_mean = [index for index in mean_candidates if index in config_index_set]
+        config_aee = list(aee_candidates.get(config_name, []))
+        config_selected = strict_budget_selection(
+            config_mean + [index for index in config_aee if index not in config_mean],
+            budget,
+        )
+        budgets[config_name] = budget
+        selected.extend(config_selected)
+    return stable_unique(selected), budgets
 
 
 def scalar_thresholds_for_mean_descriptor(coverage_rate_threshold, element_count):

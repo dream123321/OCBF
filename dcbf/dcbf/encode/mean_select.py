@@ -17,9 +17,13 @@ from .convergence_control import (
     update_metric_history,
 )
 from .find_min_cover_set import find_min_cover_set, fwss, select_last_fraction
+from .dimension_min_cover import (
+    build_dimension_tasks,
+    normalize_dimension_min_cover_workers,
+    solve_dimension_tasks,
+)
 import itertools
 from .data_distri import data_base_distribution
-from .mlp_encoding_extract import decode
 from .selection_core import group_structure_indices_by_interval
 from ..path_names import MD_WORK_DIR
 
@@ -198,19 +202,24 @@ def mean_pre_sample_flow(
     logger,
     element_count=1,
     configuration_groups=None,
-    coverage_calculation_mode='global',
     report_per_configuration_details=False,
     plateau_generations=None,
     min_coverage_delta=None,
     state_population=0,
     report_state_population_zero_baseline=False,
     mean_descriptor_low_coverage_threshold=90.0,
+    dimension_min_cover_workers=0,
+    elements=None,
 ):
     train_path = os.path.join(pwd, 'train_mlp')
     md_path = os.path.join(pwd, MD_WORK_DIR)
     plot_coverage_out_path = md_path
     state_population = max(0, int(state_population))
     mean_descriptor_low_coverage_threshold = float(mean_descriptor_low_coverage_threshold)
+    dimension_min_cover_workers = normalize_dimension_min_cover_workers(
+        dimension_min_cover_workers
+    )
+    elements = list(elements or [f"type-{index}" for index in range(element_count)])
 
     gen_num = os.path.basename(pwd).replace('gen_', '')
     main_num = os.path.basename(os.path.dirname(pwd)).replace('main_', '')
@@ -225,6 +234,8 @@ def mean_pre_sample_flow(
     config_coverage_detail = {}
     per_configuration_selected_indices = []
     per_configuration_selected_set = set()
+    per_configuration_dimension_selected = set()
+    dimension_scheduler_warning_printed = False
     mean_thresholds = scalar_thresholds_for_mean_descriptor(coverage_threshold_schedule, element_count)
     target = coverage_target_from_schedule(coverage_threshold_schedule)
 
@@ -263,89 +274,105 @@ def mean_pre_sample_flow(
             coverage_reference_max_min = large_max_min
             coverage_source = md_decoded
 
-        if coverage_calculation_mode == 'per_configuration' and configuration_groups:
-            need_index_list = []
-            no_set_need_index_list = []
-            config_coverages = []
-            for config_name, structure_indices in configuration_groups.items():
-                config_md_data = slice_decoded_by_indices(md_decoded, structure_indices)
-                _, config_need_index_list, config_no_set_need_index_list = md_extract(
-                    config_md_data,
-                    large_zero_freq_intervals_list,
-                    large_max_min,
-                    large_bins,
-                )
-                config_rates = coverage_rate(
-                    slice_decoded_by_indices(coverage_source, structure_indices),
-                    coverage_reference_intervals,
-                    coverage_reference_max_min,
-                    body,
-                    plot_coverage_out_path,
-                    coverage_rate_method,
-                    plot_model=False,
-                    plot_suffix=f'_{config_name}',
-                )
-                config_coverage_detail[config_name] = config_rates
-                config_coverages.append(config_rates)
-
-                config_metric = min(float(rate) for rate in config_rates) if config_rates else 100.0
-                if config_metric >= target:
-                    continue
-
-                need_index_list.extend(config_need_index_list)
-                no_set_need_index_list.extend(config_no_set_need_index_list)
-                config_min_cover_index = find_min_cover_set(config_no_set_need_index_list)
-                config_budget, _, _ = determine_structure_budget(
-                    [config_metric],
-                    selection_budget_schedule,
-                    mean_thresholds,
-                )
-                config_sorted_indices, _, config_normal_selection = fwss(
-                    config_no_set_need_index_list,
-                    config_min_cover_index,
-                    config_budget,
-                )
-                if config_metric < mean_descriptor_low_coverage_threshold:
-                    config_selected_indices = select_last_fraction(
-                        config_sorted_indices,
-                        config_budget,
-                    )
-                    logger.info(
-                        "per_configuration mean_descriptor coverage %.4f%% is less than %.4f%% "
-                        "for %s, select the last 20%% structure",
-                        config_metric,
-                        mean_descriptor_low_coverage_threshold,
-                        config_name,
-                    )
-                elif len(config_min_cover_index) >= config_budget:
-                    config_selected_indices = config_normal_selection
-                else:
-                    config_selected_indices = config_min_cover_index
-
-                for index in config_selected_indices:
-                    if index not in per_configuration_selected_set:
-                        per_configuration_selected_set.add(index)
-                        per_configuration_selected_indices.append(index)
-
-            type_coverage_rate = (
-                aggregate_element_coverages(
-                    [[rates] for rates in config_coverages],
-                    len(config_coverages[0]),
-                )
-                if config_coverages
-                else [100.0]
+        need_index_list = []
+        no_set_need_index_list = []
+        config_coverages = []
+        if not configuration_groups:
+            raise RuntimeError(
+                "Mean-descriptor selection requires per-configuration MD groups"
             )
-        else:
-            _, need_index_list, no_set_need_index_list = md_extract(md_decoded, large_zero_freq_intervals_list, large_max_min, large_bins)
-            type_coverage_rate = coverage_rate(
-                coverage_source,
+        for config_name, structure_indices in configuration_groups.items():
+            config_md_data = slice_decoded_by_indices(md_decoded, structure_indices)
+            config_dimension_classes, config_need_index_list, config_no_set_need_index_list = md_extract(
+                config_md_data,
+                large_zero_freq_intervals_list,
+                large_max_min,
+                large_bins,
+            )
+            config_rates = coverage_rate(
+                slice_decoded_by_indices(coverage_source, structure_indices),
                 coverage_reference_intervals,
                 coverage_reference_max_min,
                 body,
                 plot_coverage_out_path,
                 coverage_rate_method,
                 plot_model=False,
+                plot_suffix=f'_{config_name}',
             )
+            config_coverage_detail[config_name] = config_rates
+            config_coverages.append(config_rates)
+
+            config_metric = min(float(rate) for rate in config_rates) if config_rates else 100.0
+            if config_metric >= target:
+                continue
+
+            need_index_list.extend(config_need_index_list)
+            no_set_need_index_list.extend(config_no_set_need_index_list)
+            if dimension_min_cover_workers == 0:
+                config_min_cover_index = find_min_cover_set(config_no_set_need_index_list)
+            else:
+                config_tasks = build_dimension_tasks(
+                    config_dimension_classes,
+                    "mean",
+                    elements,
+                    prefix=(str(config_name),),
+                )
+                config_min_cover_index, config_stats, _ = solve_dimension_tasks(
+                    config_tasks,
+                    dimension_min_cover_workers,
+                )
+                if (
+                    config_stats.get("task_count", 0) > 0
+                    and dimension_min_cover_workers == -1
+                    and config_stats.get("scheduler") is None
+                    and not dimension_scheduler_warning_printed
+                ):
+                    logger.warning(
+                        "No scheduler allocation was detected; "
+                        "dimension_min_cover_workers=-1 uses affinity-visible CPUs."
+                    )
+                    dimension_scheduler_warning_printed = True
+                per_configuration_dimension_selected.update(config_min_cover_index)
+            config_budget, _, _ = determine_structure_budget(
+                [config_metric],
+                selection_budget_schedule,
+                mean_thresholds,
+            )
+            config_sorted_indices, _, config_normal_selection = fwss(
+                config_no_set_need_index_list,
+                config_min_cover_index,
+                config_budget,
+            )
+            if config_metric < mean_descriptor_low_coverage_threshold:
+                config_selected_indices = select_last_fraction(
+                    config_sorted_indices,
+                    config_budget,
+                )
+                logger.info(
+                    "per_configuration mean_descriptor coverage %.4f%% is less than %.4f%% "
+                    "for %s, select the last 20%% structure",
+                    config_metric,
+                    mean_descriptor_low_coverage_threshold,
+                    config_name,
+                )
+            elif len(config_min_cover_index) >= config_budget:
+                config_selected_indices = config_normal_selection
+            else:
+                config_selected_indices = config_min_cover_index
+
+            for index in config_selected_indices:
+                if index not in per_configuration_selected_set:
+                    per_configuration_selected_set.add(index)
+                    per_configuration_selected_indices.append(index)
+
+        type_coverage_rate = (
+            aggregate_element_coverages(
+                [[rates] for rates in config_coverages],
+                len(config_coverages[0]),
+            )
+            if config_coverages
+            else [100.0]
+        )
 
         large_need_index_list.append(need_index_list)
         large_no_set_need_index_list.append(no_set_need_index_list)
@@ -355,7 +382,10 @@ def mean_pre_sample_flow(
             temp = temp + list(a)
         large_classes_stru_num.append(len(list(set(temp))))
 
-        tt = find_min_cover_set(no_set_need_index_list)
+        if dimension_min_cover_workers == 0:
+            tt = find_min_cover_set(no_set_need_index_list)
+        else:
+            tt = sorted(per_configuration_dimension_selected)
 
         large_min_cover_stru_index.append(tt)
         large_min_cover_stru.append(len(tt))
@@ -372,7 +402,12 @@ def mean_pre_sample_flow(
 
     '''一个类中可以出现多个结构的index,每个结构累计频次多，说明结构越重要'''
     lists = list(itertools.chain(*large_no_set_need_index_list))
-    min_cover_index = find_min_cover_set(lists)
+    if dimension_min_cover_workers == 0:
+        min_cover_index = find_min_cover_set(lists)
+    else:
+        min_cover_index = sorted(
+            {index for selected in large_min_cover_stru_index for index in selected}
+        )
 
     '''认为收敛的标准'''
     min_coverage_rate = min(np.array(large_type_coverage_rate).flatten())
@@ -392,17 +427,12 @@ def mean_pre_sample_flow(
 
     # fw 挑出的每个结构，未覆盖原子环境数列表
     _, fw, select_index = fwss(lists, min_cover_index, real_stru_num)
-    if coverage_calculation_mode == 'per_configuration' and configuration_groups:
-        new_tt = per_configuration_selected_indices
-    elif len(min_cover_index) >= real_stru_num:
-        new_tt = select_index
-    else:
-        new_tt = min_cover_index
+    new_tt = per_configuration_selected_indices
 
     if convergence_result["converged"]:
         new_tt = []
 
-    if report_per_configuration_details and coverage_calculation_mode == 'per_configuration' and configuration_groups:
+    if report_per_configuration_details and configuration_groups:
         logger.info(
             f'per_configuration mean_descriptor coverage: '
             f'{summarize_configuration_coverages(config_coverage_detail)}'

@@ -44,6 +44,14 @@ def fwss(lists, min_cover_index, num):
     return sorted_min_cover_index, count_list, select_sorted_min_cover_index
 
 
+def rank_min_cover_indices(lists, min_cover_index):
+    counter = frequency_counter(lists)
+    return sorted(
+        {int(index) for index in min_cover_index},
+        key=lambda value: (-counter[value], value),
+    )
+
+
 def select_last_fraction(sorted_indices, num, fraction=0.2):
     if not sorted_indices:
         return []

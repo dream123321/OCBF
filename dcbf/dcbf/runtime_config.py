@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import math
+import os
 from pathlib import Path
 import re
 
@@ -182,6 +183,15 @@ def normalize_scheduler_config(scheduler):
     normalized = dict(scheduler)
     normalized.setdefault("train_env", "")
     normalized.setdefault("lmp_env", "")
+    if "clean_dft_environment" in normalized:
+        raise ValueError(
+            "clean_dft_environment has been renamed to "
+            "dft_clean_dcbf_environment"
+        )
+    dft_clean_dcbf_environment = normalized.get("dft_clean_dcbf_environment", False)
+    if not isinstance(dft_clean_dcbf_environment, bool):
+        raise ValueError("dft_clean_dcbf_environment must be true or false")
+    normalized["dft_clean_dcbf_environment"] = dft_clean_dcbf_environment
     scf_cal_engine = str(normalized.get("scf_cal_engine", "abacus")).strip().lower()
     legacy_env_key, legacy_command_key = ENGINE_LEGACY_KEYS.get(scf_cal_engine, (None, None))
     defaults = ENGINE_DEFAULT_DFT.get(scf_cal_engine, {})
@@ -247,6 +257,7 @@ class SchedulerSpec:
     submission_backend: str
     start_calc_command: str
     task_submission_method: str
+    dft_clean_dcbf_environment: bool
     dft_env: str
     dft_command: str
     bsub_script_train_sus_job_name: str
@@ -264,7 +275,38 @@ def _render_optional_env(config, key):
     return env + "\n"
 
 
+def _resolve_dft_environment_cleaner():
+    candidates = []
+    configured_root = os.environ.get("DCBF_V3_ROOT")
+    if configured_root:
+        candidates.append(Path(configured_root) / "runtime" / "clean_dft_environment.sh")
+
+    module_path = Path(__file__).resolve()
+    candidates.extend(
+        parent / "runtime" / "clean_dft_environment.sh"
+        for parent in module_path.parents
+    )
+
+    checked = []
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in checked:
+            continue
+        checked.append(resolved)
+        if resolved.is_file():
+            return resolved
+
+    locations = ", ".join(str(path) for path in checked)
+    raise FileNotFoundError(
+        "Cannot locate runtime/clean_dft_environment.sh; checked: " + locations
+    )
+
+
 def _render_engine_section(config):
+    clean_environment_line = ""
+    if config.get("dft_clean_dcbf_environment", False):
+        clean_environment = _resolve_dft_environment_cleaner()
+        clean_environment_line = f'source "{clean_environment}"\n'
     if config["submission_backend"] == "sbatch":
         return f'''
 #SBATCH -p {config["scf_queue"]}
@@ -275,7 +317,7 @@ def _render_engine_section(config):
 
 NP=${{SLURM_NTASKS:-{config["scf_cores"]}}}
 cd ${{SLURM_SUBMIT_DIR:-$PWD}}
-{_render_optional_env(config, "dft_env")}COMMAND_std="{config["dft_command"]}"
+{clean_environment_line}{_render_optional_env(config, "dft_env")}COMMAND_std="{config["dft_command"]}"
 '''
     return f'''
 #BSUB -q {config["scf_queue"]}
@@ -287,7 +329,7 @@ cd ${{SLURM_SUBMIT_DIR:-$PWD}}
 hostfile=`echo $LSB_DJOB_HOSTFILE`
 NP=`cat $hostfile | wc -l`
 cd $LS_SUBCWD
-{_render_optional_env(config, "dft_env")}COMMAND_std="{config["dft_command"]}"
+{clean_environment_line}{_render_optional_env(config, "dft_env")}COMMAND_std="{config["dft_command"]}"
 '''
 
 
@@ -376,6 +418,7 @@ def build_scheduler_spec(scheduler):
         submission_backend=config["submission_backend"],
         start_calc_command=config["start_calc_command"],
         task_submission_method=config["task_submission_method"],
+        dft_clean_dcbf_environment=config["dft_clean_dcbf_environment"],
         dft_env=config["dft_env"],
         dft_command=config["dft_command"],
         bsub_script_train_sus_job_name=job_name_prefix,

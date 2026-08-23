@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import warnings
 
 from ase.data import atomic_numbers, chemical_symbols
 from ase.io import iread, write
@@ -18,8 +19,23 @@ import numpy as np
 from .das.file_conversion import xyz2cfg
 from .encode.data_distri import Freedman_Diaconis_bins, scott, data_base_distribution
 from .encode.find_min_cover_set import find_min_cover_set
+from .encode.dimension_min_cover import (
+    build_dimension_tasks,
+    normalize_dimension_min_cover_workers,
+    solve_dimension_tasks,
+)
 from .encode.mlp_encode_sample_flow import md_extract
 from .encode.mlp_encoding_extract import decode, des_out2pkl
+from .fast_extxyz import (
+    MalformedXYZ,
+    UnsupportedFastXYZ,
+    complement_indices,
+    index_xyz_frames,
+    supports_raw_xyz,
+    write_indexed_frames,
+    write_position_cfg_part,
+    write_position_cfg_parts,
+)
 from .mtp import normalize_mtp_type
 from .runtime_config import load_json_config
 from .selection.core import group_structure_indices_by_interval
@@ -34,8 +50,9 @@ DEFAULT_DIRECT_ELEMENTS = [
     "U", "Np", "Pu",
 ]
 
-DEFAULT_UNIVERSAL_MTP_NAME = "MP_UIP.mtp"
-DEFAULT_UNIVERSAL_MTP_TYPE = "l2k2"
+DEFAULT_UNIVERSAL_MTP_NAME = "MP_UIP_l2k3.mtp"
+DEFAULT_UNIVERSAL_MTP_TYPE = "l2k3"
+XYZ_IO_MODES = {"fast_extxyz", "auto", "ase"}
 
 
 def default_reduce_sus2_mlp_exe() -> str:
@@ -241,8 +258,20 @@ class DCBFReducer:
         )
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self.encoding_seconds = 0.0
+        self._fast_xyz_indexes = {}
+        self._fast_xyz_fallbacks = []
+        self._fast_xyz_fallback_keys = set()
+        self._used_fast_xyz_io = False
+        self._used_ase_xyz_io = False
+        self.xyz_io_mode = str(
+            reduce_cfg.get("xyz_io_mode", "fast_extxyz")
+        ).strip().lower()
+        if self.xyz_io_mode not in XYZ_IO_MODES:
+            raise ValueError(
+                "reduce.xyz_io_mode must be one of: fast_extxyz, auto, ase"
+            )
 
-        self.chunk_size = int(reduce_cfg.get("chunk_size", 100000))
+        self.chunk_size = int(reduce_cfg.get("chunk_size", 1000000))
         if self.chunk_size <= 0:
             raise ValueError("reduce.chunk_size must be > 0")
         self.keep_intermediate = bool(reduce_cfg.get("keep_intermediate", False))
@@ -255,6 +284,11 @@ class DCBFReducer:
         self.encoding_cores = int(reduce_cfg.get("encoding_cores", 5))
         if self.encoding_cores <= 0:
             raise ValueError("encoding_cores must be > 0")
+        self.dimension_min_cover_workers = normalize_dimension_min_cover_workers(
+            reduce_cfg.get("dimension_min_cover_workers", -1)
+        )
+        self.dimension_min_cover_records = []
+        self._dimension_scheduler_warning_printed = False
         self.interval_width_history = []
         self.fixed_interval_widths = None
         self.fixed_interval_width_source = None
@@ -323,7 +357,11 @@ class DCBFReducer:
                 raise ValueError("parameter.mtp_type (or reduce.mtp_type) is required for reduce mode")
             self.mtp_type = normalize_mtp_type(self.mtp_type)
 
-        inferred_elements = _infer_elements_from_xyz([self.input_xyz, self.current_xyz, self.interval_ref_xyz])
+        inferred_elements = []
+        if not self.using_default_universal_assets and not explicit_elements:
+            inferred_elements = self._infer_elements(
+                [self.input_xyz, self.current_xyz, self.interval_ref_xyz]
+            )
         self.direct_self_dedup = self._mode_impl == "single" and self.current_xyz is None and self.interval_ref_xyz is None
 
         if self.using_default_universal_assets:
@@ -368,6 +406,8 @@ class DCBFReducer:
             f"{self.sort_elements_by_atomic_number}"
         )
         print(f"[reduce] Encoding cores: {self.encoding_cores}")
+        print(f"[reduce] XYZ I/O mode: {self.xyz_io_mode}")
+        print(f"[reduce] Dimension min-cover workers: {self.dimension_min_cover_workers}")
         print(f"[reduce] State population threshold: {self.state_population}")
         print(f"[reduce] Dynamic dq width update: {self.dynamic_dq_width}")
 
@@ -378,6 +418,8 @@ class DCBFReducer:
             "using_default_universal_assets": self.using_default_universal_assets,
             "sort_ele": self.sort_elements_by_atomic_number,
             "encoding_cores": self.encoding_cores,
+            "xyz_io_mode": self.xyz_io_mode,
+            "dimension_min_cover_workers": self.dimension_min_cover_workers,
             "mtp_type": self.mtp_type,
             "body_list": list(self.body_list),
             "elements": list(self.elements),
@@ -400,6 +442,103 @@ class DCBFReducer:
                 "work_dir": str(self.work_dir),
             },
         }
+
+    def _record_fast_xyz_fallback(self, path, stage, reason):
+        if self.xyz_io_mode == "fast_extxyz":
+            raise ValueError(
+                f"reduce.xyz_io_mode=fast_extxyz cannot process {Path(path).resolve()} "
+                f"during {stage}: {reason}. Use xyz_io_mode=auto to allow an ASE "
+                "fallback, or xyz_io_mode=ase to force the legacy ASE path."
+            )
+        item = {
+            "path": str(Path(path).resolve()),
+            "stage": str(stage),
+            "reason": str(reason),
+        }
+        key = (item["path"], item["stage"], item["reason"])
+        if key in self._fast_xyz_fallback_keys:
+            return
+        self._fast_xyz_fallback_keys.add(key)
+        self._fast_xyz_fallbacks.append(item)
+        self._used_ase_xyz_io = True
+        warnings.warn(
+            f"Fast EXTXYZ {stage} is unavailable for {item['path']}; using ASE: {item['reason']}",
+            RuntimeWarning,
+        )
+
+    def _get_fast_xyz_index(self, path):
+        if path is None:
+            return None
+        path = Path(path).resolve()
+        key = str(path)
+        if key in self._fast_xyz_indexes:
+            return self._fast_xyz_indexes[key]
+        if self.xyz_io_mode == "ase":
+            self._used_ase_xyz_io = True
+            self._fast_xyz_indexes[key] = None
+            return None
+        if not supports_raw_xyz(path):
+            self._fast_xyz_indexes[key] = None
+            self._record_fast_xyz_fallback(path, "frame indexing", "unsupported file suffix")
+            return None
+        try:
+            frame_index = index_xyz_frames(path, collect_elements=True)
+        except UnsupportedFastXYZ as exc:
+            self._fast_xyz_indexes[key] = None
+            self._record_fast_xyz_fallback(path, "frame indexing", exc)
+            return None
+        except MalformedXYZ as exc:
+            raise ValueError(f"Malformed XYZ input: {exc}") from exc
+        self._fast_xyz_indexes[key] = frame_index
+        self._used_fast_xyz_io = True
+        return frame_index
+
+    def _drop_fast_xyz_index(self, path):
+        if path is not None:
+            self._fast_xyz_indexes.pop(str(Path(path).resolve()), None)
+
+    def _infer_elements(self, paths):
+        element_set = set()
+        for path in paths:
+            if path is None:
+                continue
+            frame_index = self._get_fast_xyz_index(path)
+            if frame_index is not None and frame_index.elements:
+                element_set.update(frame_index.elements)
+                continue
+            if frame_index is not None:
+                self._record_fast_xyz_fallback(
+                    path,
+                    "element inference",
+                    frame_index.descriptor_reason or "element columns are unavailable",
+                )
+            for atoms in iread(str(path)):
+                element_set.update(atoms.get_chemical_symbols())
+        ordered_atomic_numbers = sorted(atomic_numbers[element] for element in element_set)
+        return [chemical_symbols[number] for number in ordered_atomic_numbers]
+
+    def _structure_count(self, path):
+        if path is None:
+            return 0
+        path = Path(path)
+        if not path.exists() or path.stat().st_size == 0:
+            return 0
+        frame_index = self._get_fast_xyz_index(path)
+        if frame_index is not None:
+            return len(frame_index)
+        return _count_xyz_structures(path)
+
+    def _raw_block_indexes(self, paths):
+        indexes = []
+        for path in paths:
+            if path is None:
+                indexes.append(None)
+                continue
+            frame_index = self._get_fast_xyz_index(path)
+            if frame_index is None:
+                return None
+            indexes.append(frame_index)
+        return indexes
 
     def _extract_width_lists(self, large_max_min, large_bins):
         width_lists = []
@@ -540,55 +679,146 @@ class DCBFReducer:
             start = stop
         return ranges
 
-    def _encode_xyz_to_pickles(self, xyz_path, prefix, out_dir):
-        start = time.perf_counter()
-        try:
-            atoms = list(iread(str(xyz_path)))
-            cfg_path = out_dir / f"{prefix}.cfg"
-            out_path = out_dir / f"{prefix}.out"
-            worker_count = min(self.encoding_cores, len(atoms)) if atoms else 1
+    def _encode_xyz_to_pickles_ase(self, xyz_path, prefix, out_dir):
+        self._used_ase_xyz_io = True
+        atoms = list(iread(str(xyz_path)))
+        cfg_path = out_dir / f"{prefix}.cfg"
+        out_path = out_dir / f"{prefix}.out"
+        worker_count = min(self.encoding_cores, len(atoms)) if atoms else 1
 
-            if worker_count <= 1:
+        if worker_count <= 1:
+            xyz2cfg(
+                self.elements,
+                self.sort_elements_by_atomic_number,
+                str(xyz_path),
+                str(cfg_path),
+                allow_missing_labels=True,
+            )
+            self._run_calc_descriptors(str(cfg_path), str(out_path))
+        else:
+            part_cfg_paths = []
+            part_out_paths = []
+            for index, chunk_atoms in enumerate(self._partition_atoms(atoms, worker_count)):
+                part_xyz = out_dir / f"{prefix}.part_{index:04d}.xyz"
+                part_cfg = out_dir / f"{prefix}.part_{index:04d}.cfg"
+                part_out = out_dir / f"{prefix}.part_{index:04d}.out"
+                _write_xyz(part_xyz, chunk_atoms)
                 xyz2cfg(
                     self.elements,
                     self.sort_elements_by_atomic_number,
-                    str(xyz_path),
-                    str(cfg_path),
+                    str(part_xyz),
+                    str(part_cfg),
                     allow_missing_labels=True,
                 )
-                self._run_calc_descriptors(str(cfg_path), str(out_path))
-            else:
-                part_xyz_paths = []
-                part_cfg_paths = []
-                part_out_paths = []
-                for index, chunk_atoms in enumerate(self._partition_atoms(atoms, worker_count)):
-                    part_xyz = out_dir / f"{prefix}.part_{index:04d}.xyz"
-                    part_cfg = out_dir / f"{prefix}.part_{index:04d}.cfg"
-                    part_out = out_dir / f"{prefix}.part_{index:04d}.out"
-                    _write_xyz(part_xyz, chunk_atoms)
-                    xyz2cfg(
+                part_cfg_paths.append(part_cfg)
+                part_out_paths.append(part_out)
+
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = [
+                    executor.submit(self._run_calc_descriptors, part_cfg, part_out)
+                    for part_cfg, part_out in zip(part_cfg_paths, part_out_paths)
+                ]
+                for future in futures:
+                    future.result()
+
+            with open(out_path, "w", encoding="utf-8") as merged:
+                for part_out in part_out_paths:
+                    with open(part_out, "r", encoding="utf-8") as source:
+                        shutil.copyfileobj(source, merged)
+        return out_path
+
+    def _encode_xyz_to_pickles_fast(self, xyz_path, prefix, out_dir, frame_index):
+        out_path = out_dir / f"{prefix}.out"
+        frame_count = len(frame_index)
+        if frame_count == 0:
+            out_path.write_text("", encoding="utf-8")
+            return out_path
+
+        worker_count = min(self.encoding_cores, frame_count)
+        ranges = self._partition_atoms(range(frame_count), worker_count)
+        ranges = [(group[0], group[-1] + 1) for group in ranges]
+        if worker_count == 1:
+            part_cfg_paths = [out_dir / f"{prefix}.cfg"]
+            part_out_paths = [out_path]
+        else:
+            part_cfg_paths = [
+                out_dir / f"{prefix}.part_{index:04d}.cfg"
+                for index in range(worker_count)
+            ]
+            part_out_paths = [path.with_suffix(".out") for path in part_cfg_paths]
+
+        if worker_count == 1:
+            write_position_cfg_parts(
+                frame_index,
+                part_cfg_paths,
+                ranges,
+                self.elements,
+                self.sort_elements_by_atomic_number,
+            )
+        else:
+            with ProcessPoolExecutor(max_workers=worker_count) as executor:
+                futures = [
+                    executor.submit(
+                        write_position_cfg_part,
+                        frame_index,
+                        part_cfg,
+                        frame_range,
                         self.elements,
                         self.sort_elements_by_atomic_number,
-                        str(part_xyz),
-                        str(part_cfg),
-                        allow_missing_labels=True,
                     )
-                    part_xyz_paths.append(part_xyz)
-                    part_cfg_paths.append(part_cfg)
-                    part_out_paths.append(part_out)
+                    for part_cfg, frame_range in zip(part_cfg_paths, ranges)
+                ]
+                for future in futures:
+                    future.result()
 
-                with ThreadPoolExecutor(max_workers=worker_count) as executor:
-                    futures = [
-                        executor.submit(self._run_calc_descriptors, part_cfg, part_out)
-                        for part_cfg, part_out in zip(part_cfg_paths, part_out_paths)
-                    ]
-                    for future in futures:
-                        future.result()
+        if worker_count == 1:
+            self._run_calc_descriptors(part_cfg_paths[0], part_out_paths[0])
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = [
+                    executor.submit(self._run_calc_descriptors, part_cfg, part_out)
+                    for part_cfg, part_out in zip(part_cfg_paths, part_out_paths)
+                ]
+                for future in futures:
+                    future.result()
+            with open(out_path, "w", encoding="utf-8") as merged:
+                for part_out in part_out_paths:
+                    with open(part_out, "r", encoding="utf-8") as source:
+                        shutil.copyfileobj(source, merged)
+        return out_path
 
-                with open(out_path, "w", encoding="utf-8") as merged:
-                    for part_out in part_out_paths:
-                        merged.write(Path(part_out).read_text(encoding="utf-8"))
+    def _encode_xyz_to_pickles(self, xyz_path, prefix, out_dir):
+        start = time.perf_counter()
+        try:
+            frame_index = self._get_fast_xyz_index(xyz_path)
+            if frame_index is not None and frame_index.descriptor_compatible:
+                out_path = self._encode_xyz_to_pickles_fast(
+                    xyz_path,
+                    prefix,
+                    out_dir,
+                    frame_index,
+                )
+            else:
+                if frame_index is not None:
+                    self._record_fast_xyz_fallback(
+                        xyz_path,
+                        "descriptor conversion",
+                        frame_index.descriptor_reason or "unsupported EXTXYZ descriptor fields",
+                    )
+                out_path = self._encode_xyz_to_pickles_ase(xyz_path, prefix, out_dir)
 
+            des_out2pkl(
+                str(out_path),
+                prefix,
+                len(self.elements),
+                self.mtp_type,
+                str(self.mtp_path),
+                self.body_list,
+                str(out_dir),
+            )
+        except UnsupportedFastXYZ as exc:
+            self._record_fast_xyz_fallback(xyz_path, "descriptor conversion", exc)
+            out_path = self._encode_xyz_to_pickles_ase(xyz_path, prefix, out_dir)
             des_out2pkl(
                 str(out_path),
                 prefix,
@@ -690,9 +920,29 @@ class DCBFReducer:
 
         return selected
 
+    def _run_dimension_min_cover(self, tasks, label):
+        selected, stats, _ = solve_dimension_tasks(
+            tasks,
+            self.dimension_min_cover_workers,
+        )
+        record = dict(stats)
+        record["label"] = str(label)
+        self.dimension_min_cover_records.append(record)
+        if (
+            stats.get("task_count", 0) > 0
+            and self.dimension_min_cover_workers == -1
+            and stats.get("scheduler") is None
+            and not self._dimension_scheduler_warning_printed
+        ):
+            print(
+                "[reduce] No scheduler allocation was detected; "
+                "dimension_min_cover_workers=-1 uses affinity-visible CPUs."
+            )
+            self._dimension_scheduler_warning_printed = True
+        return selected
+
     def _select_direct_indices(self, candidate_xyz_path):
-        candidate_atoms = list(iread(str(candidate_xyz_path)))
-        if not candidate_atoms:
+        if self._structure_count(candidate_xyz_path) == 0:
             return []
         progress = _ProgressTracker("candidate-only-reduce", 3)
 
@@ -709,12 +959,13 @@ class DCBFReducer:
 
             classes = []
             class_targets = []
+            dimension_tasks = []
             for body in self.body_list:
                 data_base_data = out_dir / f"database_{body}_body_coding_zlib.pkl"
                 if not data_base_data.exists():
                     continue
                 decoded = decode(str(data_base_data))
-                for type_atoms in decoded:
+                for element_index, type_atoms in enumerate(decoded):
                     if not type_atoms:
                         continue
                     array_data = np.asarray([atom[:-1] for atom in type_atoms], dtype=float)
@@ -730,16 +981,43 @@ class DCBFReducer:
                             array_data[:, dim].tolist(),
                             intervals,
                         )
+                        dimension_classes = [] if self.dimension_min_cover_workers != 0 else None
+                        dimension_targets = [] if self.dimension_min_cover_workers != 0 else None
                         for bucket, target in zip(grouped, targets):
                             if bucket:
                                 classes.append(bucket)
                                 class_targets.append(target)
+                                if dimension_classes is not None:
+                                    dimension_classes.append(bucket)
+                                    dimension_targets.append(target)
+                        if dimension_classes:
+                            element = (
+                                self.elements[element_index]
+                                if element_index < len(self.elements)
+                                else f"type-{element_index}"
+                            )
+                            dimension_tasks.append(
+                                {
+                                    "key": (str(body), str(element), int(dim)),
+                                    "classes": dimension_classes,
+                                    "targets": (
+                                        dimension_targets
+                                        if self.state_population > 1
+                                        else None
+                                    ),
+                                }
+                            )
             progress.update(2, f"class_count={len(classes)}")
 
             if not classes:
                 progress.update(3, "no-classes")
                 return []
-            if self.state_population <= 1:
+            if self.dimension_min_cover_workers != 0:
+                selected = self._run_dimension_min_cover(
+                    dimension_tasks,
+                    "candidate_only",
+                )
+            elif self.state_population <= 1:
                 selected = sorted(set(int(index) for index in find_min_cover_set(classes)))
             else:
                 selected = sorted(set(int(index) for index in self._find_multi_cover_set(classes, class_targets)))
@@ -752,13 +1030,12 @@ class DCBFReducer:
                 shutil.rmtree(out_dir, ignore_errors=True)
 
     def _select_indices(self, train_xyz_path, candidate_xyz_path, stage_label=None):
-        candidate_atoms = list(iread(str(candidate_xyz_path)))
-        if not candidate_atoms:
+        candidate_count = self._structure_count(candidate_xyz_path)
+        if candidate_count == 0:
             return []
 
-        train_atoms = list(iread(str(train_xyz_path)))
-        if not train_atoms:
-            return list(range(len(candidate_atoms)))
+        if self._structure_count(train_xyz_path) == 0:
+            return list(range(candidate_count))
 
         temp_dir_obj = (
             tempfile.TemporaryDirectory(dir=str(self.work_dir))
@@ -772,6 +1049,7 @@ class DCBFReducer:
             self._encode_xyz_to_pickles(candidate_xyz_path, "md", out_dir)
 
             classes = []
+            dimension_tasks = []
             stage_body_widths = {}
             for body in self.body_list:
                 data_base_data = out_dir / f"database_{body}_body_coding_zlib.pkl"
@@ -796,13 +1074,21 @@ class DCBFReducer:
                         str(data_base_data),
                         width_lists,
                     )
-                _, _, _, no_set_need_index_list = md_extract(
+                _, dimension_classes, _, no_set_need_index_list = md_extract(
                     str(md_data),
                     large_zero_freq_intervals_list,
                     large_max_min,
                     large_bins,
                 )
                 classes.extend(no_set_need_index_list)
+                if self.dimension_min_cover_workers != 0:
+                    dimension_tasks.extend(
+                        build_dimension_tasks(
+                            dimension_classes,
+                            body,
+                            self.elements,
+                        )
+                    )
 
             if self.dynamic_dq_width and stage_label is not None and stage_body_widths:
                 self.interval_width_history.append(
@@ -815,6 +1101,11 @@ class DCBFReducer:
                 )
             if not classes:
                 return []
+            if self.dimension_min_cover_workers != 0:
+                return self._run_dimension_min_cover(
+                    dimension_tasks,
+                    stage_label or "reference_guided",
+                )
             return sorted(set(int(index) for index in find_min_cover_set(classes)))
         finally:
             if temp_dir_obj is not None:
@@ -822,7 +1113,72 @@ class DCBFReducer:
             elif not self.keep_intermediate and out_dir.exists():
                 shutil.rmtree(out_dir, ignore_errors=True)
 
-    def _run_single(self):
+    def _run_single_fast(self, input_index, current_index):
+        input_count = len(input_index)
+        current_count = len(current_index) if current_index is not None else 0
+
+        if self.direct_self_dedup:
+            selected_indices = self._select_direct_indices(self.input_xyz)
+            selection_basis = "candidate_only_self_dedup"
+        else:
+            if self.interval_ref_xyz is not None:
+                train_source_path = self.interval_ref_xyz
+            elif self.current_xyz is not None:
+                train_source_path = self.current_xyz
+            else:
+                train_source_path = self.input_xyz
+            selected_indices = self._select_indices(
+                train_source_path,
+                self.input_xyz,
+                stage_label="single",
+            )
+            selection_basis = "against_existing_reference"
+
+        selected_index_set = {
+            int(index) for index in selected_indices if 0 <= int(index) < input_count
+        }
+        selected_order = sorted(selected_index_set)
+        output_selections = []
+        if self.append_current and current_index is not None and current_count:
+            output_selections.append((current_index, current_index.all_indices()))
+        output_selections.append((input_index, selected_order))
+
+        output_count = write_indexed_frames(self.output_xyz, output_selections)
+        remain_count = write_indexed_frames(
+            self.remain_xyz,
+            [(input_index, complement_indices(input_count, selected_index_set))],
+        )
+        return {
+            "mode": "candidate_only",
+            "selection_basis": selection_basis,
+            "using_default_universal_assets": self.using_default_universal_assets,
+            "mtp_path": str(self.mtp_path),
+            "mtp_species_count": self.mtp_species_count,
+            "element_count": len(self.elements),
+            "sort_elements_by_atomic_number": self.sort_elements_by_atomic_number,
+            "interval_ref_xyz": str(self.interval_ref_xyz) if self.interval_ref_xyz is not None else None,
+            "dq_width_method": self.dq_width_method,
+            "dq_width": self.dq_width,
+            "dq_width_factor": self.dq_width_factor,
+            "state_population": self.state_population,
+            "input_count": input_count,
+            "current_count": current_count,
+            "selected_from_input": len(selected_order),
+            "remain_from_input": remain_count,
+            "output_count": output_count,
+            "output_xyz": str(self.output_xyz),
+            "remain_xyz": str(self.remain_xyz),
+            "file_counts": {
+                "input_xyz": input_count,
+                "current_xyz": current_count,
+                "interval_ref_xyz": self._structure_count(self.interval_ref_xyz),
+                "output_xyz": output_count,
+                "remain_xyz": remain_count,
+            },
+        }
+
+    def _run_single_ase(self):
+        self._used_ase_xyz_io = True
         input_atoms = list(iread(str(self.input_xyz)))
         current_atoms = list(iread(str(self.current_xyz))) if self.current_xyz else []
 
@@ -879,7 +1235,109 @@ class DCBFReducer:
             },
         }
 
-    def _run_chunked(self):
+    def _run_single(self):
+        paths = [self.input_xyz]
+        if self.current_xyz is not None:
+            paths.append(self.current_xyz)
+        indexes = self._raw_block_indexes(paths)
+        if indexes is None:
+            return self._run_single_ase()
+        input_index = indexes[0]
+        current_index = indexes[1] if len(indexes) > 1 else None
+        return self._run_single_fast(input_index, current_index)
+
+    def _run_chunked_fast(self, input_index, current_index):
+        input_count = len(input_index)
+        current_count = len(current_index)
+        selected_global_indices = set()
+        chunk_ranges = self._build_chunk_ranges(input_count)
+        total_chunks = len(chunk_ranges)
+        progress = _ProgressTracker("reference-guided-reduce", total_chunks)
+
+        for chunk_id, (start, end) in enumerate(chunk_ranges):
+            if start >= end:
+                continue
+            chunk_dir = self.work_dir / f"chunk_{chunk_id:05d}"
+            chunk_dir.mkdir(parents=True, exist_ok=True)
+            train_xyz_path = chunk_dir / "train.xyz"
+            candidate_xyz_path = chunk_dir / "candidate.xyz"
+
+            train_selections = []
+            if current_count:
+                train_selections.append((current_index, current_index.all_indices()))
+            if selected_global_indices:
+                train_selections.append((input_index, sorted(selected_global_indices)))
+            if not train_selections:
+                train_selections.append((input_index, range(start, end)))
+            write_indexed_frames(train_xyz_path, train_selections)
+            write_indexed_frames(
+                candidate_xyz_path,
+                [(input_index, range(start, end))],
+            )
+
+            try:
+                local_indices = self._select_indices(
+                    train_xyz_path,
+                    candidate_xyz_path,
+                    stage_label=f"chunk_{chunk_id:05d}",
+                )
+                for local_index in local_indices:
+                    local_index = int(local_index)
+                    if 0 <= local_index < end - start:
+                        selected_global_indices.add(start + local_index)
+
+                progress.update(
+                    chunk_id + 1,
+                    f"selected={len(selected_global_indices)} "
+                    f"remain={input_count - len(selected_global_indices)}",
+                )
+            finally:
+                self._drop_fast_xyz_index(train_xyz_path)
+                self._drop_fast_xyz_index(candidate_xyz_path)
+                if not self.keep_intermediate:
+                    shutil.rmtree(chunk_dir, ignore_errors=True)
+
+        selected_order = sorted(selected_global_indices)
+        output_selections = []
+        if self.append_current and current_count:
+            output_selections.append((current_index, current_index.all_indices()))
+        output_selections.append((input_index, selected_order))
+        output_count = write_indexed_frames(self.output_xyz, output_selections)
+        remain_count = write_indexed_frames(
+            self.remain_xyz,
+            [(input_index, complement_indices(input_count, selected_global_indices))],
+        )
+        return {
+            "mode": "reference_guided",
+            "chunk_size": self.chunk_size,
+            "using_default_universal_assets": self.using_default_universal_assets,
+            "mtp_path": str(self.mtp_path),
+            "mtp_species_count": self.mtp_species_count,
+            "element_count": len(self.elements),
+            "sort_elements_by_atomic_number": self.sort_elements_by_atomic_number,
+            "interval_ref_xyz": str(self.interval_ref_xyz) if self.interval_ref_xyz is not None else None,
+            "dq_width_method": self.dq_width_method,
+            "dq_width": self.dq_width,
+            "dq_width_factor": self.dq_width_factor,
+            "state_population": self.state_population,
+            "input_count": input_count,
+            "current_count": current_count,
+            "selected_from_input": len(selected_order),
+            "remain_from_input": remain_count,
+            "output_count": output_count,
+            "output_xyz": str(self.output_xyz),
+            "remain_xyz": str(self.remain_xyz),
+            "file_counts": {
+                "input_xyz": input_count,
+                "current_xyz": current_count,
+                "interval_ref_xyz": self._structure_count(self.interval_ref_xyz),
+                "output_xyz": output_count,
+                "remain_xyz": remain_count,
+            },
+        }
+
+    def _run_chunked_ase(self):
+        self._used_ase_xyz_io = True
         input_atoms = list(iread(str(self.input_xyz)))
         current_atoms = list(iread(str(self.current_xyz))) if self.current_xyz else []
 
@@ -962,6 +1420,12 @@ class DCBFReducer:
             },
         }
 
+    def _run_chunked(self):
+        indexes = self._raw_block_indexes([self.input_xyz, self.current_xyz])
+        if indexes is None:
+            return self._run_chunked_ase()
+        return self._run_chunked_fast(indexes[0], indexes[1])
+
     def run(self):
         total_start = time.perf_counter()
         if self._mode_impl == "single":
@@ -977,7 +1441,74 @@ class DCBFReducer:
         report["processing_hours"] = processing_seconds / 3600.0
         report["total_hours"] = total_seconds / 3600.0
         report["input_config"] = self.input_config_snapshot
-        report["effective_config"] = self._build_effective_config()
+        if self._used_fast_xyz_io and self._used_ase_xyz_io:
+            effective_xyz_io_mode = "mixed"
+        elif self._used_fast_xyz_io:
+            effective_xyz_io_mode = "fast_extxyz"
+        elif self._used_ase_xyz_io:
+            effective_xyz_io_mode = "ase"
+        else:
+            effective_xyz_io_mode = "none"
+        effective_config = self._build_effective_config()
+        effective_config["xyz_io_backend"] = effective_xyz_io_mode
+        effective_config["xyz_io_fallbacks"] = list(self._fast_xyz_fallbacks)
+        report["effective_config"] = effective_config
+        report["fast_xyz_io"] = {
+            "requested_mode": self.xyz_io_mode,
+            "effective_mode": effective_xyz_io_mode,
+            "indexed_file_count": sum(
+                1 for frame_index in self._fast_xyz_indexes.values() if frame_index is not None
+            ),
+            "fallback_count": len(self._fast_xyz_fallbacks),
+            "fallbacks": list(self._fast_xyz_fallbacks),
+        }
+        if self.dimension_min_cover_workers == 0:
+            report["dimension_min_cover"] = {
+                "mode": "joint",
+                "requested_workers": 0,
+                "call_count": 0,
+                "task_count": 0,
+                "elapsed_seconds": 0.0,
+                "calls": [],
+            }
+        else:
+            report["dimension_min_cover"] = {
+                "mode": "per_dimension",
+                "requested_workers": self.dimension_min_cover_workers,
+                "call_count": len(self.dimension_min_cover_records),
+                "task_count": sum(
+                    item["task_count"] for item in self.dimension_min_cover_records
+                ),
+                "effective_workers": max(
+                    (item["effective_workers"] for item in self.dimension_min_cover_records),
+                    default=0,
+                ),
+                "sum_selected": sum(
+                    item["sum_selected"] for item in self.dimension_min_cover_records
+                ),
+                "union_selected": sum(
+                    item["union_selected"] for item in self.dimension_min_cover_records
+                ),
+                "overlap_removed": sum(
+                    item["overlap_removed"] for item in self.dimension_min_cover_records
+                ),
+                "global_prune_removed": sum(
+                    item.get("global_prune", {}).get("removed", 0)
+                    for item in self.dimension_min_cover_records
+                ),
+                "global_prune_seconds": sum(
+                    item.get("global_prune", {}).get("elapsed_seconds", 0.0)
+                    for item in self.dimension_min_cover_records
+                ),
+                "dimension_solve_seconds": sum(
+                    item.get("dimension_solve_seconds", 0.0)
+                    for item in self.dimension_min_cover_records
+                ),
+                "elapsed_seconds": sum(
+                    item["elapsed_seconds"] for item in self.dimension_min_cover_records
+                ),
+                "calls": self.dimension_min_cover_records,
+            }
         if self.interval_width_history:
             report["interval_width_history"] = self.interval_width_history
 

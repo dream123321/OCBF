@@ -98,22 +98,23 @@
       "train_sus_queue": "256G56c",
       "train_sus_cores": 56,
       "train_sus_ptile": 56,
-      "train_env": "source /work/phy-huangj/hj_mlp/dcbf_one-button_deployment/activate.sh",
-      "sus2_mlp_exe": "/work/phy-huangj/hj_mlp/dcbf_one-button_deployment/runtime/bin/mlp-sus2",
-      "original_command": "mpirun -np $NP /work/phy-huangj/hj_mlp/dcbf_one-button_deployment/runtime/bin/mlp-sus2 train hyx.mtp ../train.cfg --stdd-weight=0.0 --std-weight=0.0000 --max-iter=2000 --do-lin --curr-pot-name=",
-      "subsequent_command": "mpirun /work/phy-huangj/hj_mlp/dcbf_one-button_deployment/runtime/bin/mlp-sus2 train hyx.mtp ../train.cfg --init-params=same --do-samp=false --stdd-weight=0.0 --std-weight=0.0000 --max-iter=1000 --do-lin --curr-pot-name=",
+      "train_env": "source /data/phy-huangj/app/temp/dcbf_one-button_deployment/activate.sh",
+      "sus2_mlp_exe": "/data/phy-huangj/app/temp/dcbf_one-button_deployment/runtime/bin/mlp-sus2",
+      "original_command": "mpirun -np $NP /data/phy-huangj/app/temp/dcbf_one-button_deployment/runtime/bin/mlp-sus2 train hyx.mtp ../train.cfg --stdd-weight=0.0 --std-weight=0.0000 --max-iter=2000 --do-lin --curr-pot-name=",
+      "subsequent_command": "mpirun /data/phy-huangj/app/temp/dcbf_one-button_deployment/runtime/bin/mlp-sus2 train hyx.mtp ../train.cfg --init-params=same --do-samp=false --stdd-weight=0.0 --std-weight=0.0000 --max-iter=1000 --do-lin --curr-pot-name=",
       "lmp_queue": "256G56c",
       "lmp_cores": 56,
       "lmp_ptile": 56,
-      "lmp_env": "source /work/phy-huangj/hj_mlp/dcbf_one-button_deployment/activate.sh",
-      "lmp_exe": "mpirun -np $NP /work/phy-huangj/hj_mlp/dcbf_one-button_deployment/runtime/bin/lmp_mpi",
+      "lmp_env": "source /data/phy-huangj/app/temp/dcbf_one-button_deployment/activate.sh",
+      "lmp_exe": "mpirun -np $NP /data/phy-huangj/app/temp/dcbf_one-button_deployment/runtime/bin/lmp_mpi",
       "scf_queue": "256G56c",
       "scf_cores": 28,
       "scf_ptile": 56,
       "scf_cal_engine": "vasp",
       "submission_backend": "bsub",
-      "dft_env": "export VASP_HOME=/share/software/vasp/6.5.1.intel.2023.2.0\nexport INTEL_ONEAPI=/share/intel/2022.2.0\nexport HDF5_ROOT=/share/libraries/hdf5/1.14.6.oneapi.2023.2.0\nexport PATH=\"$VASP_HOME/bin:$INTEL_ONEAPI/mpi/2021.6.0/bin:$INTEL_ONEAPI/compiler/2022.1.0/linux/bin/intel64:$INTEL_ONEAPI/compiler/2022.1.0/linux/bin:$PATH\"\nexport LD_LIBRARY_PATH=\"$HDF5_ROOT/lib:$INTEL_ONEAPI/mkl/2022.1.0/lib/intel64:$INTEL_ONEAPI/mpi/2021.6.0/lib/release:$INTEL_ONEAPI/mpi/2021.6.0/lib:$INTEL_ONEAPI/mpi/2021.6.0/libfabric/lib:$INTEL_ONEAPI/compiler/2022.1.0/linux/compiler/lib/intel64_lin:${LD_LIBRARY_PATH:-}\"\nexport FI_PROVIDER_PATH=\"$INTEL_ONEAPI/mpi/2021.6.0/libfabric/lib/prov\"\nulimit -s unlimited\nexport OMP_NUM_THREADS=1\nexport MKL_NUM_THREADS=1\nexport OMP_STACKSIZE=512M\nexport KMP_STACKSIZE=512M\nexport HDF5_USE_FILE_LOCKING=FALSE",
-      "dft_command": "/share/intel/2022.2.0/mpi/2021.6.0/bin/mpirun -np $NP /share/software/vasp/6.5.1.intel.2023.2.0/bin/vasp_std"
+      "dft_clean_dcbf_environment": false,
+      "dft_env": "module purge\nmodule load vasp/5.4.4",
+      "dft_command": "mpirun -np $NP vasp_std"
     },
     "structure_selection": {
       "common": {
@@ -127,7 +128,8 @@
       "modes": {
         "mlp_encode_model": {
           "enabled": true,
-          "encoding_cores": 2,
+          "encoding_cores": 4,
+          "dimension_min_cover_workers": 4,
           "dq_width_method": "Freedman_Diaconis",
           "dq_width": 0.01,
           "dq_width_factor": 1.0,
@@ -135,10 +137,11 @@
             "two",
             "three"
           ],
+          "selection_budget_scope": "per_configuration",
           "selection_budget_schedule": [
-            20,
-            15,
-            10
+            12,
+            8,
+            5
           ],
           "coverage_threshold_schedule": [
             99.5,
@@ -146,7 +149,6 @@
             99.92
           ],
           "coverage_rate_method": "mean",
-          "coverage_calculation_mode": "per_configuration",
           "report_per_configuration_details": true,
           "candidate_trigger": 10,
           "plateau_generations": 7,

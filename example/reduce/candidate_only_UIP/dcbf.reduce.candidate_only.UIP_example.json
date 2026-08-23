@@ -1,7 +1,7 @@
 {
   "parameter": {
     "sort_ele": true,
-    "mtp_type": "l2k2",
+    "mtp_type": "l2k3",
     "body_list": [
       "two",
       "three"
@@ -11,11 +11,13 @@
     "dq_width_factor": 1.0
   },
   "scheduler": {
-    "sus2_mlp_exe": "/work/phy-huangj/hj_mlp/dcbf_one-button_deployment/runtime/bin/mlp-sus2"
+    "sus2_mlp_exe": "/data/phy-huangj/app/temp/dcbf_one-button_deployment/runtime/bin/mlp-sus2"
   },
   "reduce": {
     "mode": "candidate_only",
     "encoding_cores": 64,
+    "xyz_io_mode": "fast_extxyz",
+    "dimension_min_cover_workers": -1,
     "state_population": 0,
     "input_xyz": "./out.xyz",
     "append_current": false,

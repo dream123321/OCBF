@@ -549,7 +549,11 @@ def build_parser(include_advanced_commands=True):
         epilog=_required_epilog(
             "exactly one reduce JSON config file. "
             "Use reduce.mode=candidate_only for candidate-only self-reduction, "
-            "or reduce.mode=reference_guided to select new structures against an existing reference set.",
+            "or reduce.mode=reference_guided to select new structures against an existing reference set. "
+            "reduce.xyz_io_mode accepts fast_extxyz, auto, or ase; the default fast_extxyz "
+            "requires standard EXTXYZ input, while auto permits an ASE fallback. "
+            "Reference-guided chunk_size defaults to 1000000; the bundled universal "
+            "Reduce potential is an 84-element l2k3 model.",
             command="reduce",
         ),
     )

@@ -281,6 +281,12 @@ class InitialDatasetBuilder:
             "phonon_displacement_candidates": 0,
             "phonon_displacement_in_training_set": 0,
             "md_candidates": 0,
+            "generated_candidates": 0,
+            "candidate_internal_duplicates_removed": 0,
+            "unique_candidates_before_existing_dedup": 0,
+            "existing_duplicates_removed_before_scf": 0,
+            "pre_dft_existing_dedup_applied": False,
+            "dft_input_structures": 0,
             "unique_candidates": 0,
             "labeled_structures": 0,
             "scf_completed": 0,
@@ -330,13 +336,41 @@ class InitialDatasetBuilder:
             if not candidates:
                 raise ValueError("initial dataset builder produced no candidate structures")
 
+            counts["generated_candidates"] = len(candidates)
             unique_candidates = self._deduplicate_structures(candidates)
-            counts["unique_candidates"] = len(unique_candidates)
-            candidate_xyz = self.build_root / "candidate_pool.xyz"
-            self._write_xyz(candidate_xyz, unique_candidates)
-            self._log_candidate_structure_summary(base_structures, unique_candidates, counts)
+            counts["candidate_internal_duplicates_removed"] = len(candidates) - len(unique_candidates)
+            counts["unique_candidates_before_existing_dedup"] = len(unique_candidates)
 
-            scf_stats = self._run_scf_labelling(unique_candidates)
+            dft_candidates = unique_candidates
+            if self.dataset_mode == "augment_existing":
+                dft_candidates, duplicates_from_existing = self._exclude_existing_structures(
+                    unique_candidates,
+                    existing_dataset,
+                )
+                counts["existing_duplicates_removed_before_scf"] = duplicates_from_existing
+                counts["pre_dft_existing_dedup_applied"] = True
+
+            counts["unique_candidates"] = len(dft_candidates)
+            counts["dft_input_structures"] = len(dft_candidates)
+            candidate_xyz = self.build_root / "candidate_pool.xyz"
+            self._write_xyz(candidate_xyz, dft_candidates)
+            self._write_pre_dft_dedup_report(counts)
+            self._log_candidate_structure_summary(base_structures, dft_candidates, counts)
+
+            if dft_candidates:
+                scf_stats = self._run_scf_labelling(dft_candidates)
+            else:
+                self.logger.info(
+                    "[builder.scf] No novel candidates remain after deduplication; DFT/SCF skipped."
+                )
+                final_stats = self._finalize_labeled_dataset([])
+                scf_stats = {
+                    "labeled_structures": 0,
+                    "scf_completed": 0,
+                    "scf_collected": 0,
+                    "scf_force_threshold_count": 0,
+                    **final_stats,
+                }
             counts.update(scf_stats)
 
             report = {
@@ -409,6 +443,12 @@ class InitialDatasetBuilder:
             "phonon_displacement_candidates": self._count_xyz_frames(self.build_root / "phonon_displacement.xyz"),
             "phonon_displacement_in_training_set": 0,
             "md_candidates": self._count_xyz_frames(self.build_root / "md_candidates.xyz"),
+            "generated_candidates": None,
+            "candidate_internal_duplicates_removed": None,
+            "unique_candidates_before_existing_dedup": None,
+            "existing_duplicates_removed_before_scf": None,
+            "pre_dft_existing_dedup_applied": False,
+            "dft_input_structures": self._count_xyz_frames(resume_state["candidate_pool"]),
             "unique_candidates": self._count_xyz_frames(resume_state["candidate_pool"]),
             "labeled_structures": 0,
             "scf_completed": 0,
@@ -418,6 +458,19 @@ class InitialDatasetBuilder:
             "final_dataset_structures": 0,
             "final_duplicates_removed": 0,
         }
+        dedup_report = self._read_pre_dft_dedup_report()
+        if dedup_report:
+            for key in (
+                "generated_candidates",
+                "candidate_internal_duplicates_removed",
+                "unique_candidates_before_existing_dedup",
+                "existing_duplicates_removed_before_scf",
+                "pre_dft_existing_dedup_applied",
+                "dft_input_structures",
+                "unique_candidates",
+            ):
+                if key in dedup_report:
+                    counts[key] = dedup_report[key]
         if self._coerce_bool(phonon_cfg.get("include_in_initial_train_set", True), default=True):
             counts["phonon_displacement_in_training_set"] = counts["phonon_displacement_candidates"]
 
@@ -977,6 +1030,49 @@ class InitialDatasetBuilder:
             unique.append(atoms)
         return unique
 
+    def _exclude_existing_structures(self, structures: Iterable, existing_structures: Iterable):
+        existing_keys = {
+            self._fingerprint_atoms(atoms)
+            for atoms in existing_structures
+        }
+        novel = []
+        duplicate_count = 0
+        for atoms in structures:
+            if self._fingerprint_atoms(atoms) in existing_keys:
+                duplicate_count += 1
+                continue
+            novel.append(atoms)
+        return novel, duplicate_count
+
+    def _pre_dft_dedup_report_path(self):
+        return self.build_root / "candidate_dedup_report.json"
+
+    def _write_pre_dft_dedup_report(self, counts):
+        keys = (
+            "generated_candidates",
+            "candidate_internal_duplicates_removed",
+            "unique_candidates_before_existing_dedup",
+            "existing_duplicates_removed_before_scf",
+            "pre_dft_existing_dedup_applied",
+            "dft_input_structures",
+            "unique_candidates",
+        )
+        payload = {key: counts.get(key) for key in keys}
+        self._pre_dft_dedup_report_path().write_text(
+            json.dumps(payload, indent=2),
+            encoding="utf-8",
+        )
+
+    def _read_pre_dft_dedup_report(self):
+        path = self._pre_dft_dedup_report_path()
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
     @staticmethod
     def _fingerprint_atoms(atoms):
         symbols = tuple(atoms.get_chemical_symbols())
@@ -1042,6 +1138,19 @@ class InitialDatasetBuilder:
             counts["md_candidates"],
             counts["unique_candidates"],
         )
+        self.logger.info(
+            "[builder.dedup] generated=%s internal_duplicates=%s unique_before_existing=%s",
+            counts.get("generated_candidates"),
+            counts.get("candidate_internal_duplicates_removed"),
+            counts.get("unique_candidates_before_existing_dedup"),
+        )
+        if counts.get("pre_dft_existing_dedup_applied"):
+            self.logger.info(
+                "[builder.dedup] existing=%s matched_existing=%s dft_input=%s",
+                counts.get("existing_dataset_structures"),
+                counts.get("existing_duplicates_removed_before_scf"),
+                counts.get("dft_input_structures"),
+            )
         self.logger.info(
             "[builder.summary] source_formula_counts=%s source_atom_count[min,max,mean]=[%s,%s,%.2f]",
             source_summary["formula_counts"],

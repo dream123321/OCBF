@@ -5,6 +5,7 @@ import fnmatch
 import glob
 import importlib.util
 import json
+import logging
 import math
 import os
 import pickle
@@ -52,6 +53,8 @@ DEFAULT_WIDTH_FACTOR_2D = 2.0
 DEFAULT_LAMMPS_RUN_MODE = "scheduler"
 DEFAULT_LAMMPS_TIMEOUT_HOURS = 24.0
 DEFAULT_LAMMPS_POLL_SECONDS = 15
+DEFAULT_QUERY_MAX_CELL_VOLUME_FACTOR = 1.5
+QUERY_MANIFEST_SCHEMA_VERSION = 3
 
 
 @dataclass
@@ -81,6 +84,17 @@ class CoverageResult:
     covered_2d_bool: np.ndarray
     covered_1d_scores: np.ndarray
     covered_1d_display_bool: Optional[np.ndarray] = None
+
+
+@dataclass
+class QueryRunResult:
+    frames: List
+    status: str
+    reference_volume: float
+    max_volume_ratio: float
+    first_failed_step: Optional[int]
+    first_failed_ratio: Optional[float]
+    discarded_frames: int
 
 
 @dataclass
@@ -516,6 +530,37 @@ def read_parameter_yaml(path: Path) -> Dict:
         return yaml.safe_load(handle) or {}
 
 
+def coverage_query_max_volume_factor(parameter: Dict) -> Optional[float]:
+    raw_value = parameter.get(
+        "npt_max_cell_volume_filter_factor",
+        DEFAULT_QUERY_MAX_CELL_VOLUME_FACTOR,
+    )
+    if raw_value is None:
+        return None
+    try:
+        from .npt_volume_filter import normalize_npt_max_cell_volume_filter_factor
+    except ImportError:  # pragma: no cover - direct script execution fallback.
+        from npt_volume_filter import normalize_npt_max_cell_volume_filter_factor
+    return normalize_npt_max_cell_volume_filter_factor(raw_value)
+
+
+def _coverage_query_logger(run_dir: Path) -> logging.Logger:
+    logger_name = f"dcbf.coverage_query.{abs(hash(str(Path(run_dir).resolve())))}"
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    app_log = Path(run_dir) / "app.log"
+    app_log.parent.mkdir(parents=True, exist_ok=True)
+    resolved_log = str(app_log.resolve())
+    for handler in logger.handlers:
+        if isinstance(handler, logging.FileHandler) and str(Path(handler.baseFilename).resolve()) == resolved_log:
+            return logger
+    handler = logging.FileHandler(app_log, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s"))
+    logger.addHandler(handler)
+    return logger
+
+
 def parse_repeat_size(value) -> Tuple[int, int, int]:
     if value is None:
         return (1, 1, 1)
@@ -736,6 +781,39 @@ def inject_sus2_pair_style(script_text: str, mtp_filename: str) -> str:
     return "\n".join(normalized) + "\n"
 
 
+def inject_volume_stability_guard(
+    script_text: str,
+    reference_volume: float,
+    max_volume_factor: Optional[float],
+) -> str:
+    if max_volume_factor is None:
+        return script_text
+    if not math.isfinite(reference_volume) or reference_volume <= 0:
+        raise ValueError(f"Invalid coverage-query reference volume: {reference_volume}")
+
+    lines = script_text.splitlines()
+    guarded = []
+    inserted = False
+    for line in lines:
+        guarded.append(line)
+        if not inserted and line.strip() == "pair_coeff * *":
+            guarded.extend(
+                [
+                    "",
+                    f"variable dcbf_reference_volume equal {reference_volume:.16g}",
+                    "variable dcbf_volume_ratio equal vol/v_dcbf_reference_volume",
+                    (
+                        "fix dcbf_volume_guard all halt 1 v_dcbf_volume_ratio > "
+                        f"{float(max_volume_factor):.16g} error hard message yes"
+                    ),
+                ]
+            )
+            inserted = True
+    if not inserted:
+        raise ValueError("Could not insert the coverage-query cell-volume stability guard")
+    return "\n".join(guarded) + "\n"
+
+
 def load_lammps_template(run_dir: Path, ensemble: str, temp: float) -> str:
     template_path = run_dir / "init" / "lmp_in.py"
     if not template_path.exists():
@@ -782,7 +860,9 @@ def read_lammps_custom_dump(dump_path: Path, elements: Sequence[str]) -> List:
         if not lines[index].startswith("ITEM: TIMESTEP"):
             index += 1
             continue
-        index += 2
+        index += 1
+        timestep = int(float(lines[index].strip()))
+        index += 1
         if index >= len(lines) or not lines[index].startswith("ITEM: NUMBER OF ATOMS"):
             raise ValueError(f"Unexpected LAMMPS dump format near timestep in {dump_path}")
         natoms = int(lines[index + 1].strip())
@@ -824,6 +904,7 @@ def read_lammps_custom_dump(dump_path: Path, elements: Sequence[str]) -> List:
                 pe_values[row_index] = float(row[col_index["c_pe"]])
 
         atoms = Atoms(symbols=symbols, positions=positions, cell=cell, pbc=True)
+        atoms.info["lammps_step"] = timestep
         atoms.calc = SinglePointCalculator(atoms, energy=float(np.sum(pe_values)), forces=forces)
         frames.append(atoms)
     if not frames:
@@ -859,7 +940,7 @@ def _tail_file(path: Path, max_lines: int = 80) -> str:
 
 
 def _lammps_failure_context(work_dir: Path) -> str:
-    candidates = [work_dir / "jobs_mlip_0.ini.out", work_dir / "bsub.lsf"]
+    candidates = [work_dir / "jobs_mlip_0.ini.out", work_dir / "log.lammps", work_dir / "bsub.lsf"]
     candidates.extend(sorted(work_dir.glob("*.err")))
     candidates.extend(sorted(work_dir.glob("*.out")))
     blocks = []
@@ -873,6 +954,57 @@ def _lammps_failure_context(work_dir: Path) -> str:
         if text:
             blocks.append(f"--- {path.name} ---\n{text}")
     return "\n\n".join(blocks)
+
+
+def _is_volume_stability_failure(context: str) -> bool:
+    normalized = str(context).lower()
+    return "fix halt condition" in normalized
+
+
+def _parse_volume_stability_failure(context: str) -> Tuple[Optional[int], Optional[float]]:
+    match = re.search(
+        r"fix halt condition.*?step\s+(\d+).*?value\s+([-+0-9.eE]+)",
+        str(context),
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return None, None
+    try:
+        return int(match.group(1)), float(match.group(2))
+    except (TypeError, ValueError):
+        return None, None
+
+
+def filter_query_frames_by_volume(
+    frames: Sequence,
+    reference_volume: float,
+    max_volume_factor: Optional[float],
+) -> Tuple[List, int, float, Optional[int], Optional[float]]:
+    if max_volume_factor is None:
+        ratios = [float(atoms.get_volume()) / reference_volume for atoms in frames]
+        return list(frames), 0, max(ratios, default=0.0), None, None
+
+    retained = []
+    max_ratio = 0.0
+    first_failed_step = None
+    first_failed_ratio = None
+    threshold = float(max_volume_factor)
+    comparison_tolerance = max(1.0e-12, abs(threshold) * 1.0e-10)
+    for atoms in frames:
+        ratio = float(atoms.get_volume()) / reference_volume
+        max_ratio = max(max_ratio, ratio)
+        if ratio > threshold + comparison_tolerance:
+            first_failed_step = int(atoms.info.get("lammps_step", -1))
+            first_failed_ratio = ratio
+            break
+        retained.append(atoms)
+    return (
+        retained,
+        len(frames) - len(retained),
+        max_ratio,
+        first_failed_step,
+        first_failed_ratio,
+    )
 
 
 def _lammps_timeout_seconds(args: argparse.Namespace) -> int:
@@ -966,29 +1098,82 @@ def _run_lammps_query_for_structure(
     ensemble: str,
     temp: float,
     mtp_path: Path,
-) -> List:
+    max_volume_factor: Optional[float],
+) -> QueryRunResult:
     from ase.io import write
 
     work_dir.mkdir(parents=True, exist_ok=True)
     atoms = atoms.copy()
     atoms = atoms.repeat(size)
+    reference_volume = float(atoms.get_volume())
     write(str(work_dir / "data.in"), atoms, format="lammps-data", masses=True, specorder=specorder, force_skew=True)
 
     shutil.copy2(mtp_path, work_dir / "current_0.mtp")
 
     lmp_text = inject_sus2_pair_style(load_lammps_template(run_dir, ensemble, temp), "current_0.mtp")
+    lmp_text = inject_volume_stability_guard(
+        lmp_text,
+        reference_volume,
+        max_volume_factor,
+    )
     (work_dir / "lmp.in").write_text(lmp_text, encoding="utf-8")
 
     run_mode = str(getattr(args, "lammps_run_mode", DEFAULT_LAMMPS_RUN_MODE) or DEFAULT_LAMMPS_RUN_MODE).lower()
-    if run_mode == "local":
-        _run_lammps_query_local(work_dir, scheduler, args)
-    else:
-        _run_lammps_query_scheduler(work_dir, scheduler, args)
+    stability_failed = False
+    failure_context = ""
+    try:
+        if run_mode == "local":
+            _run_lammps_query_local(work_dir, scheduler, args)
+        else:
+            _run_lammps_query_scheduler(work_dir, scheduler, args)
+    except (RuntimeError, subprocess.CalledProcessError) as exc:
+        failure_context = _lammps_failure_context(work_dir)
+        if max_volume_factor is None or not _is_volume_stability_failure(failure_context):
+            raise
+        stability_failed = True
 
     dump_path = work_dir / "force.0.dump"
     if not dump_path.exists():
+        if stability_failed:
+            failed_step, failed_ratio = _parse_volume_stability_failure(failure_context)
+            return QueryRunResult(
+                frames=[],
+                status="stability_failure",
+                reference_volume=reference_volume,
+                max_volume_ratio=float(failed_ratio or 0.0),
+                first_failed_step=failed_step,
+                first_failed_ratio=failed_ratio,
+                discarded_frames=0,
+            )
         raise FileNotFoundError(f"LAMMPS finished but did not write {dump_path}")
-    return read_lammps_custom_dump(dump_path, specorder)
+
+    try:
+        frames = read_lammps_custom_dump(dump_path, specorder)
+    except ValueError:
+        if not stability_failed:
+            raise
+        frames = []
+    retained, discarded, max_ratio, failed_step, failed_ratio = filter_query_frames_by_volume(
+        frames,
+        reference_volume,
+        max_volume_factor,
+    )
+    if failed_step is not None:
+        stability_failed = True
+    if stability_failed and failed_step is None:
+        failed_step, failed_ratio = _parse_volume_stability_failure(failure_context)
+        if failed_ratio is not None:
+            max_ratio = max(max_ratio, failed_ratio)
+
+    return QueryRunResult(
+        frames=retained,
+        status="stability_failure" if stability_failed else "ok",
+        reference_volume=reference_volume,
+        max_volume_ratio=max_ratio,
+        first_failed_step=failed_step,
+        first_failed_ratio=failed_ratio,
+        discarded_frames=discarded,
+    )
 
 
 def run_lammps_query_generation(run_dir: Path, args: argparse.Namespace, output_xyz: Path) -> Path:
@@ -1005,6 +1190,8 @@ def run_lammps_query_generation(run_dir: Path, args: argparse.Namespace, output_
     sort_ele = bool(parameter.get("sort_ele", True))
     size = parse_repeat_size(parameter.get("size", "(1, 1, 1)"))
     query_conditions = choose_lammps_query_conditions(runtime_config)
+    max_volume_factor = coverage_query_max_volume_factor(parameter)
+    coverage_logger = _coverage_query_logger(run_dir)
 
     query_root = output_xyz.parent
     query_root.mkdir(parents=True, exist_ok=True)
@@ -1027,13 +1214,19 @@ def run_lammps_query_generation(run_dir: Path, args: argparse.Namespace, output_
         "Selected LAMMPS query conditions: "
         + ", ".join(f"{ensemble}@{temperature:g} K" for ensemble, temperature in query_conditions)
     )
+    print(
+        "Coverage-query cell-volume stability factor: "
+        + ("disabled" if max_volume_factor is None else f"V/V0 <= {max_volume_factor:g}")
+    )
 
     all_frames = []
     manifest = []
+    stability_failed_runs = 0
+    discarded_frames = 0
     for source in selected_sources:
         for ensemble, temperature in query_conditions:
             work_dir = query_root / "runs" / source.label / ensemble
-            frames = _run_lammps_query_for_structure(
+            run_result = _run_lammps_query_for_structure(
                 run_dir,
                 args,
                 work_dir,
@@ -1044,7 +1237,29 @@ def run_lammps_query_generation(run_dir: Path, args: argparse.Namespace, output_
                 ensemble,
                 temperature,
                 mtp_path,
+                max_volume_factor,
             )
+            frames = run_result.frames
+            if run_result.status == "stability_failure":
+                stability_failed_runs += 1
+                discarded_frames += run_result.discarded_frames
+                failed_step_text = (
+                    "unknown" if run_result.first_failed_step is None else str(run_result.first_failed_step)
+                )
+                failed_ratio_text = (
+                    "unknown"
+                    if run_result.first_failed_ratio is None
+                    else f"{run_result.first_failed_ratio:.4f}"
+                )
+                warning = (
+                    "Coverage-query MD stability failure | "
+                    f"structure={source.label} | ensemble={ensemble} | "
+                    f"temperature={temperature:g} K | step={failed_step_text} | "
+                    f"V/V0={failed_ratio_text} | limit={max_volume_factor:.4f} | "
+                    f"stable_frames_retained={len(frames)}"
+                )
+                coverage_logger.warning(warning)
+                print(f"WARNING: {warning}")
             for atoms in frames:
                 atoms.info["coverage_query_structure"] = source.label
                 atoms.info["coverage_query_source"] = str(source.path)
@@ -1062,21 +1277,43 @@ def run_lammps_query_generation(run_dir: Path, args: argparse.Namespace, output_
                     "temperature": float(temperature),
                     "work_dir": str(work_dir),
                     "frames": len(frames),
+                    "status": run_result.status,
+                    "reference_volume": run_result.reference_volume,
+                    "max_volume_ratio": run_result.max_volume_ratio,
+                    "first_failed_step": run_result.first_failed_step,
+                    "first_failed_ratio": run_result.first_failed_ratio,
+                    "discarded_frames": run_result.discarded_frames,
                 }
             )
 
     if not all_frames:
         raise ValueError("LAMMPS query generation produced no frames.")
-    if output_xyz.exists():
-        output_xyz.unlink()
-    write(str(output_xyz), all_frames, format="extxyz")
+    temporary_output = output_xyz.with_name(output_xyz.name + ".tmp")
+    if temporary_output.exists():
+        temporary_output.unlink()
+    write(str(temporary_output), all_frames, format="extxyz")
+    os.replace(temporary_output, output_xyz)
     manifest_payload = {
-        "schema_version": 2,
+        "schema_version": QUERY_MANIFEST_SCHEMA_VERSION,
         "query_conditions": lammps_query_condition_records(query_conditions),
+        "max_cell_volume_factor": max_volume_factor,
         "runs": manifest,
         "total_frames": len(all_frames),
+        "stability_failed_runs": stability_failed_runs,
+        "discarded_frames": discarded_frames,
     }
-    (query_root / "query_manifest.json").write_text(json.dumps(manifest_payload, indent=2), encoding="utf-8")
+    manifest_path = query_root / "query_manifest.json"
+    temporary_manifest = manifest_path.with_name(manifest_path.name + ".tmp")
+    temporary_manifest.write_text(json.dumps(manifest_payload, indent=2), encoding="utf-8")
+    os.replace(temporary_manifest, manifest_path)
+    coverage_logger.info(
+        "Coverage-query summary | runs=%s | stability_failed_runs=%s | "
+        "retained_frames=%s | discarded_frames=%s",
+        len(manifest),
+        stability_failed_runs,
+        len(all_frames),
+        discarded_frames,
+    )
     return output_xyz
 
 
@@ -1085,11 +1322,19 @@ def lammps_query_manifest_matches(run_dir: Path, manifest_path: Path) -> bool:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         return False
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != 2:
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != QUERY_MANIFEST_SCHEMA_VERSION:
         return False
     runtime_config = read_json_if_exists(run_dir / "dcbf.runtime.json")
     expected = lammps_query_condition_records(choose_lammps_query_conditions(runtime_config))
-    return manifest.get("query_conditions") == expected
+    try:
+        parameter = read_parameter_yaml(run_dir / "init" / "parameter.yaml")
+        expected_factor = coverage_query_max_volume_factor(parameter)
+    except (FileNotFoundError, RuntimeError, ValueError, TypeError):
+        return False
+    return (
+        manifest.get("query_conditions") == expected
+        and manifest.get("max_cell_volume_factor") == expected_factor
+    )
 
 
 def ensure_lammps_query(run_dir: Path, args: argparse.Namespace) -> Path:

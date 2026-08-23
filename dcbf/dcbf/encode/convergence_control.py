@@ -74,3 +74,42 @@ def evaluate_metric_convergence(metric_history, target, plateau_generations=None
         "converged": hard_converged or plateau_converged,
         "recent_improvements": recent_improvements,
     }
+
+
+def log_plateau_convergence(
+    logger,
+    encoding_result,
+    mean_result,
+    mean_descriptor_enabled,
+    plateau_generations,
+    min_coverage_delta,
+):
+    results = [("encoding_body_coverage", encoding_result)]
+    if mean_descriptor_enabled:
+        results.append(("mean_descriptor", mean_result))
+
+    if not any(result.get("plateau_converged", False) for _, result in results):
+        return
+
+    statuses = []
+    for metric_name, result in results:
+        if result.get("plateau_converged", False):
+            status = "plateau"
+        elif result.get("hard_converged", False):
+            status = "hard_threshold"
+        else:
+            status = "not_converged"
+        statuses.append(f"{metric_name}={status}")
+        logger.info(
+            "Coverage convergence | metric=%s | reason=%s | current=%.4f%% | "
+            "hard_target=%.4f%% | recent_deltas=%s | plateau_generations=%s | "
+            "min_coverage_delta=%.4f",
+            metric_name,
+            status,
+            float(result.get("metric", 100.0)),
+            float(result.get("target", 100.0)),
+            [round(float(value), 4) for value in result.get("recent_improvements", [])],
+            plateau_generations,
+            float(min_coverage_delta),
+        )
+    logger.info("Active-learning loop ended | reason=coverage_plateau | %s", " | ".join(statuses))

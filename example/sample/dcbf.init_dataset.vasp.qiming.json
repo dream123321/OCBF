@@ -98,20 +98,21 @@
       "train_sus_queue": "33",
       "train_sus_cores": 40,
       "train_sus_ptile": 40,
-      "train_env": "source /work/phy-huangj/hj_mlp/dcbf_one-button_deployment/activate.sh",
-      "sus2_mlp_exe": "/work/phy-huangj/hj_mlp/dcbf_one-button_deployment/runtime/bin/mlp-sus2",
-      "original_command": "mpirun -np $NP /work/phy-huangj/hj_mlp/dcbf_one-button_deployment/runtime/bin/mlp-sus2 train hyx.mtp ../train.cfg --stdd-weight=0.0 --std-weight=0.0000 --max-iter=2000 --do-lin --curr-pot-name=",
-      "subsequent_command": "mpirun /work/phy-huangj/hj_mlp/dcbf_one-button_deployment/runtime/bin/mlp-sus2 train hyx.mtp ../train.cfg --init-params=same --do-samp=false --stdd-weight=0.0 --std-weight=0.0000 --max-iter=1000 --do-lin --curr-pot-name=",
+      "train_env": "source /data/phy-huangj/app/temp/dcbf_one-button_deployment/activate.sh",
+      "sus2_mlp_exe": "/data/phy-huangj/app/temp/dcbf_one-button_deployment/runtime/bin/mlp-sus2",
+      "original_command": "mpirun -np $NP /data/phy-huangj/app/temp/dcbf_one-button_deployment/runtime/bin/mlp-sus2 train hyx.mtp ../train.cfg --stdd-weight=0.0 --std-weight=0.0000 --max-iter=2000 --do-lin --curr-pot-name=",
+      "subsequent_command": "mpirun /data/phy-huangj/app/temp/dcbf_one-button_deployment/runtime/bin/mlp-sus2 train hyx.mtp ../train.cfg --init-params=same --do-samp=false --stdd-weight=0.0 --std-weight=0.0000 --max-iter=1000 --do-lin --curr-pot-name=",
       "lmp_queue": "33",
       "lmp_cores": 40,
       "lmp_ptile": 40,
-      "lmp_env": "source /work/phy-huangj/hj_mlp/dcbf_one-button_deployment/activate.sh",
-      "lmp_exe": "mpirun -np $NP /work/phy-huangj/hj_mlp/dcbf_one-button_deployment/runtime/bin/lmp_mpi",
+      "lmp_env": "source /data/phy-huangj/app/temp/dcbf_one-button_deployment/activate.sh",
+      "lmp_exe": "mpirun -np $NP /data/phy-huangj/app/temp/dcbf_one-button_deployment/runtime/bin/lmp_mpi",
       "scf_queue": "33",
       "scf_cores": 40,
       "scf_ptile": 40,
       "scf_cal_engine": "vasp",
       "submission_backend": "bsub",
+      "dft_clean_dcbf_environment": false,
       "dft_env": "export PATH=/work/phy-huangj/app/vasp.5.4.4/bin:$PATH",
       "dft_command": "mpirun -np $NP vasp_std"
     },
@@ -127,7 +128,8 @@
       "modes": {
         "mlp_encode_model": {
           "enabled": true,
-          "encoding_cores": 2,
+          "encoding_cores": 4,
+          "dimension_min_cover_workers": 4,
           "dq_width_method": "Freedman_Diaconis",
           "dq_width": 0.01,
           "dq_width_factor": 1.0,
@@ -135,10 +137,11 @@
             "two",
             "three"
           ],
+          "selection_budget_scope": "per_configuration",
           "selection_budget_schedule": [
-            20,
-            15,
-            10
+            12,
+            8,
+            5
           ],
           "coverage_threshold_schedule": [
             99.5,
@@ -146,7 +149,6 @@
             99.92
           ],
           "coverage_rate_method": "mean",
-          "coverage_calculation_mode": "per_configuration",
           "report_per_configuration_details": true,
           "candidate_trigger": 10,
           "plateau_generations": 7,
