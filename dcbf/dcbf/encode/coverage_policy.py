@@ -223,10 +223,14 @@ def build_configuration_groups(dirs, dirs_stru_counts):
 
 
 def slice_decoded_by_indices(decoded_data, structure_indices):
+    from .descriptor_store import DescriptorRows
     index_set = set(structure_indices)
     filtered = []
     for type_atoms in ensure_decoded(decoded_data):
-        filtered.append([atom for atom in type_atoms if atom[-1] in index_set])
+        if isinstance(type_atoms, DescriptorRows):
+            filtered.append(type_atoms.select_frames(structure_indices))
+        else:
+            filtered.append([atom for atom in type_atoms if atom[-1] in index_set])
     return filtered
 
 

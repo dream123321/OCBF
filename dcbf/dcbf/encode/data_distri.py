@@ -1,6 +1,8 @@
 import numpy as np
 
 from .mlp_encoding_extract import decode
+from .descriptor_store import column, numeric_data, values_and_indices
+from ..memory_guard import current_guard, require_memory
 
 
 def _safe_positive_bins(number_of_bins):
@@ -49,11 +51,11 @@ def scott(data, dq_width_factor=1.0):
 
 def distribution(array_data, dq_width, dq_width_method, fig_title, body, plot_model, dq_width_factor=1.0, state_population=0):
     state_population = max(0, int(state_population))
-    D = len(array_data[0])
+    array_data = numeric_data(array_data)
+    D = array_data.shape[1]
     zero_freq_intervals_list = []
     max_min = []
     bins = []
-    array_data = np.array(array_data)
     axes = None
     if plot_model:
         import matplotlib.pyplot as plt
@@ -63,7 +65,9 @@ def distribution(array_data, dq_width, dq_width_method, fig_title, body, plot_mo
         fig.suptitle(f"body_{body} distribution of type_{fig_title} (method_{dq_width_method})")
 
     for i in range(D):
-        new_data = array_data[:, i]
+        new_data = column(array_data, i)
+        if current_guard() is not None:
+            require_memory(len(new_data) * 24)
         max_min.append([max(new_data), min(new_data)])
         if dq_width_method == "Freedman_Diaconis":
             bin_count = Freedman_Diaconis_bins(new_data, dq_width_factor=dq_width_factor)
@@ -83,6 +87,9 @@ def distribution(array_data, dq_width, dq_width_method, fig_title, body, plot_mo
         else:
             raise ValueError("dq_width_method does not exist!")
 
+        if current_guard() is not None:
+            # Include histogram arrays and the worst-case Python interval list.
+            require_memory(bin_count * 160 + len(new_data) * 24)
         bins.append(bin_count)
         if plot_model:
             frequencies, bin_edges, _ = axes[i].hist(new_data, bins=bin_count, alpha=0.6, color="g", edgecolor="black")
@@ -108,8 +115,7 @@ def distribution(array_data, dq_width, dq_width_method, fig_title, body, plot_mo
 
 def worker(args):
     type_atoms, dq_width, dq_width_method, fig_title, body, plot_model, dq_width_factor, state_population = args
-    stru_temp = [atom[:-1] for atom in type_atoms]
-    tt = np.array(stru_temp)
+    tt, _ = values_and_indices(type_atoms)
     zero_freq_intervals_list, max_min, bins = distribution(
         tt,
         dq_width,
@@ -131,7 +137,7 @@ def data_base_distribution(data_base_data, dq_width, dq_width_method, body, plot
     large_bins = []
 
     for type_index, type_atoms in enumerate(train_data):
-        if type_atoms:
+        if len(type_atoms):
             zero_freq_intervals_list, max_min, bins = worker(
                 (type_atoms, dq_width, dq_width_method, str(type_index), body, plot_model, dq_width_factor, state_population)
             )

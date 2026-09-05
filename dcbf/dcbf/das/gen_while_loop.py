@@ -4,6 +4,7 @@ import yaml
 import time
 import sys
 import subprocess
+from ..memory_guard import run_monitored_generation
 
 def mkdir(dir):
     if not os.path.exists(dir):
@@ -40,7 +41,7 @@ def gen_while_loop(pwd, npt, nvt, start_position,gen_num,sleep_time,max_gen):
         os.chdir(start_position)
         if not os.path.exists('__ok__'):
             copy_init(pwd, npt, nvt, start_position)
-            subprocess.run([sys.executable, '-m', 'dcbf.cli', 'run-generation', '--workspace', start_position], check=True)
+            run_monitored_generation([sys.executable, '-m', 'dcbf.cli', 'run-generation', '--workspace', start_position], start_position)
             while True:
                 if os.path.exists('__ok__'):
                     break

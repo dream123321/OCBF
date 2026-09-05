@@ -1,9 +1,9 @@
 # DCBF Installation
 
-Dual-space Chemical-Bond-level Fine Sampling
+Optimal Chemical-Bond-level Fine Sampling
 
 ## 1. Recommended: One-Button Deployment Package
-Requires GNU C Library (glibc) 2.17 or newer.
+Support ldd (GNU libc) version ≥ 2.17
 
 ## Download
 

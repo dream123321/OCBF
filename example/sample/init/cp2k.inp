@@ -96,6 +96,10 @@
         &END RESTART
       &END PRINT
     &END SCF
+    &PRINT
+      &E_DENSITY_CUBE
+      &END E_DENSITY_CUBE
+    &END PRINT
   &END DFT
   &PRINT
     &FORCES ON #Print atomic forces

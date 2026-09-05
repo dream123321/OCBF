@@ -1,7 +1,6 @@
 import os
 import pickle
-from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
+import tempfile
 import zlib
 
 import numpy as np
@@ -13,15 +12,30 @@ PICKLE_PROTOCOL = pickle.HIGHEST_PROTOCOL
 ZLIB_COMPRESS_LEVEL = 1
 
 
-@lru_cache(maxsize=None)
 def _decode_cached(data_pkl, mtime_ns):
-    with open(data_pkl, 'rb') as f:
-        compressed_data = f.read()
-    decompressed_data = zlib.decompress(compressed_data)
-    return pickle.loads(decompressed_data)
+    from ..memory_guard import require_memory
+    decoder = zlib.decompressobj()
+    size = 0
+    with tempfile.SpooledTemporaryFile(max_size=8 * 1024 ** 2) as temporary:
+        with open(data_pkl, 'rb') as handle:
+            for chunk in iter(lambda: handle.read(1024 ** 2), b''):
+                pending = chunk
+                while pending:
+                    block = decoder.decompress(pending, 8 * 1024 ** 2)
+                    pending = decoder.unconsumed_tail
+                    temporary.write(block)
+                    size += len(block)
+        if not decoder.eof:
+            raise RuntimeError(f'Truncated compressed descriptor cache: {data_pkl}')
+        # A legacy pickle can contain many Python objects. Refuse unsafe fallback.
+        require_memory(size * 8)
+        temporary.seek(0)
+        return pickle.load(temporary)
 
 
 def decode(data_pkl):
+    if not isinstance(data_pkl, (str, os.PathLike)):
+        return data_pkl
     data_pkl = os.path.abspath(data_pkl)
     mtime_ns = os.stat(data_pkl).st_mtime_ns
     return _decode_cached(data_pkl, mtime_ns)
@@ -84,6 +98,7 @@ def extract_mtp_many_body_index(mtp_type,hyx_mtp_path):
 
 
 def iter_descriptor_structures(des_out_path):
+    from ..memory_guard import current_guard, require_memory
     structure_index = 0
     with open(des_out_path, "r", encoding="utf-8") as handle:
         line_iter = iter(handle)
@@ -97,6 +112,8 @@ def iter_descriptor_structures(des_out_path):
                 parsed = np.fromstring(atom_line, sep=" ")
                 if parsed.size == 0:
                     continue
+                if not atoms and current_guard() is not None:
+                    require_memory(atom_num * (parsed.size * 8 + 128))
                 atom_type = int(parsed[0])
                 descriptors = parsed[1:]
                 atoms.append((atom_type, descriptors))
@@ -105,7 +122,6 @@ def iter_descriptor_structures(des_out_path):
 
 
 def des_out2pkl(des_out_path, prefix, num_ele, mtp_type, hyx_mlp_path, body_name_list,out_path):
-    total_list = [[] for _ in range(num_ele)]
     two_body_list = [[] for _ in range(num_ele)]
     three_body_list = [[] for _ in range(num_ele)]
     four_body_list = [[] for _ in range(num_ele)]
@@ -118,21 +134,12 @@ def des_out2pkl(des_out_path, prefix, num_ele, mtp_type, hyx_mlp_path, body_name
         for atom_type, descriptors in atoms:
             if atom_type < 0 or atom_type >= num_ele:
                 continue
-            total_row = descriptors.tolist()
-            total_row.append(structure_index)
-            total_list[atom_type].append(total_row)
-
-            two_row = descriptors[two_body].tolist()
-            two_row.append(structure_index)
-            two_body_list[atom_type].append(two_row)
-
-            three_row = descriptors[three_body].tolist()
-            three_row.append(structure_index)
-            three_body_list[atom_type].append(three_row)
-
-            four_row = descriptors[four_body].tolist()
-            four_row.append(structure_index)
-            four_body_list[atom_type].append(four_row)
+            if 'two' in body_name_list:
+                two_body_list[atom_type].append(descriptors[two_body].tolist() + [structure_index])
+            if 'three' in body_name_list:
+                three_body_list[atom_type].append(descriptors[three_body].tolist() + [structure_index])
+            if 'four' in body_name_list:
+                four_body_list[atom_type].append(descriptors[four_body].tolist() + [structure_index])
 
     body_list = [two_body_list,three_body_list,four_body_list]
     body_name = [prefix+'_two_body_',prefix+'_three_body_',prefix+'_four_body_']
@@ -144,10 +151,8 @@ def des_out2pkl(des_out_path, prefix, num_ele, mtp_type, hyx_mlp_path, body_name
         for index, (body, name) in enumerate(zip(body_list, body_name))
         if index in body_index
     ]
-    with ThreadPoolExecutor(max_workers=len(selected_payloads) or 1) as executor:
-        futures = [executor.submit(save_compressed_pickle, body, filename) for body, filename in selected_payloads]
-        for future in futures:
-            future.result()
+    for body, filename in selected_payloads:
+        save_compressed_pickle(body, filename)
 
 if __name__ == '__main__':
     hyx_mtp_path = 'hyx.mtp'

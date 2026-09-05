@@ -16,6 +16,7 @@ from ase.io import iread
 
 from .das.file_conversion import xyz2cfg
 from .runtime_config import build_scheduler_spec, normalize_scheduler_config
+from .training_dataset import TrainingDatasetStore
 
 
 TRAINING_TEMPLATE_CHOICES = {
@@ -124,7 +125,13 @@ class HighPrecisionTrainer:
         job_dir = self.training_root / "train_job"
         job_dir.mkdir(parents=True, exist_ok=True)
 
-        xyz2cfg(elements, self._sort_ele_flag(), str(input_xyz), str(train_cfg))
+        train_cfg_source = "explicit_input"
+        if self.training.get("input_xyz"):
+            xyz2cfg(elements, self._sort_ele_flag(), str(input_xyz), str(train_cfg))
+        else:
+            training_store = TrainingDatasetStore(self.run_dir, self.config)
+            training_store.ensure_cfg_link(train_cfg)
+            train_cfg_source = "shared_runtime_cfg"
         rendered_template = self._prepare_training_template(template_path, job_dir / "hyx.mtp", elements)
         self.logger.info("[training] input_xyz=%s", input_xyz)
         self.logger.info("[training] elements=%s", elements)
@@ -168,6 +175,7 @@ class HighPrecisionTrainer:
             "species_count": len(elements),
             "r_max": self.training.get("r_max"),
             "train_cfg": str(train_cfg),
+            "train_cfg_source": train_cfg_source,
             "model_path": str(model_path),
             "prediction_path": str(prediction_path) if prediction_path is not None else None,
             "plot_path": str(plot_path) if plot_path is not None else None,

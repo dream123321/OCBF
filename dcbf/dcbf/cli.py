@@ -29,6 +29,11 @@ from .high_precision_cli import (
 )
 from .mp_search import handle_mp_search_command
 from .path_names import DFT_WORK_DIR
+from .raw_dft_archive import (
+    extract_raw_dft_archive,
+    pack_raw_dft_directory,
+    verify_raw_dft_archive,
+)
 from .runtime_config import build_md_loop_schedule, load_json_config
 
 MANAGED_RUN_CHILD_FLAG = "--managed-run-child"
@@ -36,6 +41,7 @@ PID_FILE_NAME = "pid.txt"
 LOG_FILE_NAME = "logout"
 APP_LOG_FILE_NAME = "app.log"
 ADVANCED_TOP_LEVEL_COMMANDS = {"run-generation", "benchmark-selection", "calibrate-selection"}
+REDUCE_WORKER_ENV = "DCBF_REDUCE_WORKER"
 
 
 def _required_epilog(required_text, defaults_section=None, command=None):
@@ -51,6 +57,14 @@ def _resolve_run_dir_from_config(config_path):
     raw_config = load_json_config(config_path)
     normalized = WorkspaceBootstrapper.normalize_config_layout(raw_config)
     return WorkspaceBootstrapper.resolve_path(config_path.parent, normalized.get("run_dir", ".")).resolve()
+
+
+def _resolve_reduce_work_dir(config_path):
+    config_path = Path(config_path).resolve()
+    raw_config = load_json_config(config_path)
+    reduce_config = raw_config.get("reduce", {})
+    raw_path = Path(reduce_config.get("work_dir", ".dcbf_reduce_work"))
+    return raw_path.resolve() if raw_path.is_absolute() else (config_path.parent / raw_path).resolve()
 
 
 def _resolve_kill_target_dir(target):
@@ -301,18 +315,52 @@ def handle_create_init_command(_args):
     return 0
 
 
+def handle_raw_dft_command(args):
+    if args.raw_dft_action == "pack":
+        result = pack_raw_dft_directory(args.directory, output_path=args.output)
+        print(f"Directory archived: {result['source_dir']}")
+        print(f"archive: {result['archive']}")
+        print(f"format: {result['archive_format']}")
+        print(f"size_bytes: {result['size_bytes']}")
+        print(f"sha256: {result['sha256']}")
+        print(f"files: {len(result['files'])}")
+        return 0
+    if args.raw_dft_action == "verify":
+        result = verify_raw_dft_archive(args.archive)
+        print(f"Archive verified: {result['archive']}")
+        print(f"format: {result['archive_format']}")
+        print(f"size_bytes: {result['size_bytes']}")
+        print(f"sha256: {result['sha256']}")
+        print(f"files: {len(result['files'])}")
+        if result["manifest"]:
+            status = "matched" if result["manifest_matched"] else "not matched"
+            print(f"manifest: {result['manifest']} ({status})")
+        return 0
+    if args.raw_dft_action == "extract":
+        result = extract_raw_dft_archive(args.archive, output_dir=args.output_dir)
+        print(f"Archive extracted: {result['archive']}")
+        print(f"output_dir: {result['output_dir']}")
+        print(f"sha256: {result['sha256']}")
+        print(f"files: {len(result['files'])}")
+        return 0
+    raise ValueError(f"Unsupported raw-dft action: {args.raw_dft_action}")
+
+
 class DCBFApplication:
     def run_from_config(self, config_path, prepare_only=False):
         from .artifact_bundle import ArtifactBundler
         from .candidate_pool import CandidatePool
         from .high_precision_training import HighPrecisionTrainer
+        from .training_dataset import TrainingDatasetStore
 
         bootstrapper = WorkspaceBootstrapper(config_path)
         training_cfg = bootstrapper.config.get("training", {})
 
-        run_dir, _, _, _, should_pause_after_build = bootstrapper.prepare_workspace()
+        run_dir, xyz_input, _, _, should_pause_after_build = bootstrapper.prepare_workspace()
         if prepare_only:
             return run_dir
+        training_store = TrainingDatasetStore(run_dir, bootstrapper.config)
+        training_store.ensure_initial(xyz_input)
         if should_pause_after_build:
             ArtifactBundler(bootstrapper.config, run_dir, bootstrapper.config_path).collect()
             return run_dir
@@ -369,6 +417,7 @@ class DCBFApplication:
             trainer = HighPrecisionTrainer(bootstrapper.config, bootstrapper.config_path, run_dir)
             trainer.run()
         ArtifactBundler(bootstrapper.config, run_dir, bootstrapper.config_path).collect()
+        training_store.mark_complete_and_cleanup()
         return run_dir
 
     @staticmethod
@@ -399,8 +448,20 @@ class DCBFApplication:
     def reduce_from_config(config_path):
         from .reduce import DCBFReducer
 
-        reducer = DCBFReducer(config_path)
-        return reducer.run()
+        config_path = Path(config_path).resolve()
+        if os.environ.get(REDUCE_WORKER_ENV) == "1":
+            reducer = DCBFReducer(config_path)
+            return reducer.run()
+
+        from .memory_guard import run_monitored_generation
+
+        work_dir = _resolve_reduce_work_dir(config_path)
+        work_dir.mkdir(parents=True, exist_ok=True)
+        child_environment = os.environ.copy()
+        child_environment[REDUCE_WORKER_ENV] = "1"
+        command = [sys.executable, "-m", "dcbf.cli", "reduce", str(config_path)]
+        run_monitored_generation(command, work_dir, poll_seconds=2, env=child_environment)
+        return None
 
     def run_from_config_managed(self, config_path, prepare_only=False):
         config_path = Path(config_path).resolve()
@@ -559,6 +620,55 @@ def build_parser(include_advanced_commands=True):
     )
     reduce_parser.add_argument("config", help="path to the JSON config file")
 
+    raw_dft_parser = subparsers.add_parser(
+        "raw-dft",
+        help="pack, verify, or safely extract raw DFT files",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  dcbf raw-dft pack task_1\n"
+            "  dcbf raw-dft verify summary_bundle/raw_dft/vasp/main_0/gen_0/dir_1/task_1.tar.zst\n"
+            "  dcbf raw-dft extract summary_bundle/raw_dft/vasp/main_0/gen_0/dir_1/task_1.tar.zst "
+            "--output-dir restored/task_1"
+        ),
+    )
+    raw_dft_subparsers = raw_dft_parser.add_subparsers(
+        dest="raw_dft_action",
+        required=True,
+    )
+    raw_dft_pack_parser = raw_dft_subparsers.add_parser(
+        "pack",
+        help="archive every regular file in one directory with bundled zstd -19 -T1",
+    )
+    raw_dft_pack_parser.add_argument(
+        "directory",
+        help="directory to archive in full",
+    )
+    raw_dft_pack_parser.add_argument(
+        "--output",
+        help="new .tar.zst path; defaults to DIRECTORY.tar.zst beside the directory",
+    )
+    raw_dft_verify_parser = raw_dft_subparsers.add_parser(
+        "verify",
+        help="verify compression, member safety, SHA-256, and matching manifest metadata",
+    )
+    raw_dft_verify_parser.add_argument(
+        "archive",
+        help="path to a task_*.tar.zst or legacy task_*.tar.gz archive",
+    )
+    raw_dft_extract_parser = raw_dft_subparsers.add_parser(
+        "extract",
+        help="verify and safely extract a raw DFT archive",
+    )
+    raw_dft_extract_parser.add_argument(
+        "archive",
+        help="path to a task_*.tar.zst or legacy task_*.tar.gz archive",
+    )
+    raw_dft_extract_parser.add_argument(
+        "--output-dir",
+        help="new extraction directory; defaults beside the archive and must not already exist",
+    )
+
     kill_parser = subparsers.add_parser(
         "kill",
         help="kill the current managed DCBF run from pid.txt",
@@ -654,6 +764,8 @@ def main(argv=None):
     if args.command == "reduce":
         app.reduce_from_config(args.config)
         return 0
+    if args.command == "raw-dft":
+        return handle_raw_dft_command(args)
     if args.command == "kill":
         return app.kill_managed_run(args.target)
     parser.error(f"Unsupported command: {args.command}")

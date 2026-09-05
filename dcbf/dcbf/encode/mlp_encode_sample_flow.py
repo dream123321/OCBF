@@ -23,6 +23,10 @@ from .convergence_control import (
 )
 from .mlp_encoding_extract import des_out2pkl
 from .mean_encoding_extract import mean_des_out2pkl
+from .descriptor_store import build_descriptor_store, column, numeric_data, values_and_indices
+from .compact_indices import group_compact_indices
+from .selected_frames import SelectedFrames
+from ..memory_guard import descriptor_stage, stage_progress
 import time
 from .coverage_rate import coverage_rate
 from .find_min_cover_set import (
@@ -99,9 +103,11 @@ def delete_md_data(md_path,dirs):
     files_to_delete = glob.glob(os.path.join(md_path, 'md*'))
     gen_0_files_to_delete = glob.glob(os.path.join(md_path, 'gen*'))
     for file in files_to_delete:
-        remove(file)
+        if os.path.isfile(file) and not file.endswith('.pkl'):
+            remove(file)
     for file in gen_0_files_to_delete:
-        remove(file)
+        if os.path.isfile(file) and not file.endswith('.pkl'):
+            remove(file)
 
     '''删除目录下的md.cfg和md.out文件'''
     for path in dirs:
@@ -120,9 +126,11 @@ def delete_database_data(train_path):
     files_to_delete = glob.glob(os.path.join(train_path, 'database*'))
     gen_0_files_to_delete = glob.glob(os.path.join(train_path, 'gen*'))
     for file in files_to_delete:
-        remove(file)
+        if os.path.isfile(file) and not file.endswith('.pkl'):
+            remove(file)
     for file in gen_0_files_to_delete:
-        remove(file)
+        if os.path.isfile(file) and not file.endswith('.pkl'):
+            remove(file)
 
 def is_in_interval(x, interval):
     """判断 x 是否在区间 interval 内"""
@@ -204,7 +212,7 @@ def parallel_process(stru_indexs, data_list, intervals):
     return final_no_set_categories
 
 def parallel_process(stru_indexs, data_list, intervals):
-    return group_structure_indices_by_interval(stru_indexs, data_list, intervals)
+    return group_compact_indices(stru_indexs, data_list, intervals)
 
 
 #####md#######
@@ -255,12 +263,12 @@ def freq_intervals_stru_cluster(data_list, stru_indexs, zero_freq_intervals, max
     return categories, no_set_categories
 
 def md_sub_extract(array_data, stru_indexs, type_zero_freq_intervals_list,max_min, bins):
-    D = len(array_data[0])
+    array_data = numeric_data(array_data)
+    D = array_data.shape[1]
     categories_list = []
     no_set_categories_list = []
-    array_data = np.array(array_data)
     for i in range(D):
-        new_data = array_data[:, i]
+        new_data = column(array_data, i)
         categories, no_set_categories = freq_intervals_stru_cluster(new_data, stru_indexs, type_zero_freq_intervals_list[i], max_min[i], bins[i])
         categories_list.append(categories)
         no_set_categories_list.append(no_set_categories)
@@ -271,7 +279,7 @@ def md_extract(data, large_zero_freq_intervals_list, large_max_min, large_bins):
     D = 0
     for a in md_data:
         if len(a) != 0:
-            D = np.array(a).shape[1] - 1
+            D = values_and_indices(a)[0].shape[1]
             break
     large_categories_list = []
     large_no_set_categories_list = []
@@ -279,9 +287,8 @@ def md_extract(data, large_zero_freq_intervals_list, large_max_min, large_bins):
     for type_atoms, type_zero_freq_intervals_list, max_min, bins in zip(
             md_data, large_zero_freq_intervals_list, large_max_min, large_bins):
 
-        if type_atoms:
-            stru_temp = [atom[:-1] for atom in type_atoms]
-            stru_index_temp = [atom[-1] for atom in type_atoms]
+        if len(type_atoms):
+            stru_temp, stru_index_temp = values_and_indices(type_atoms)
             categories_list, no_set_categories_list = md_sub_extract(
                 stru_temp, stru_index_temp, type_zero_freq_intervals_list, max_min, bins)
         else:
@@ -305,6 +312,7 @@ def md_extract(data, large_zero_freq_intervals_list, large_max_min, large_bins):
 
     #large_categories_list [[[], [], [{1600, 1673, 1041, 1076, 1688, 1759},{1},{2}], [], [], []], [[], [{1900}], [], [], [], []]] 维度[0,1,2]对应[type,D,{}/[]] {}/[]零频区间对应的结构index
 
+@descriptor_stage
 def main_sample_flow(
     pwd,
     dirs,
@@ -371,11 +379,12 @@ def main_sample_flow(
     delete_md_data(md_path, dirs)
 
     if int(gen_num) != 0 and int(main_num) != 0:
-        mul_encode(pwd, gen_0_mtp, dirs, 'gen_0_md.cfg', 'gen_0_md.out', scheduler.sus2_mlp_exe, scheduler.train_env)
+        mul_encode(pwd, gen_0_mtp, dirs, 'gen_0_md.cfg', 'gen_0_md.out', scheduler.sus2_mlp_exe, scheduler.train_env, workers=encoding_cores)
 
+    stage_progress('training_descriptor_encoding', input_path=train_cfg, workers=encoding_cores)
     encode_cfg_parallel(train_cfg, data_out, scheduler.sus2_mlp_exe, mtp_path, encoding_cores, scheduler.train_env)
-    dirs_stru_counts = mul_encode(pwd, mtp_path, dirs, 'md.cfg', 'md.out', scheduler.sus2_mlp_exe, scheduler.train_env)
-    logger.info('Descriptor encoding completed.')
+    dirs_stru_counts = mul_encode(pwd, mtp_path, dirs, 'md.cfg', 'md.out', scheduler.sus2_mlp_exe, scheduler.train_env, workers=encoding_cores)
+    logger.info('External descriptor encoding completed; preparing numeric descriptor data.')
 
     ###cfg2xyz
     xyz_out_file_path = os.path.join(md_path, 'md.xyz')
@@ -391,17 +400,11 @@ def main_sample_flow(
         gen_0_data_out = os.path.join(pwd, 'train_mlp', 'gen_0_database.out')
         gen_0_md_out = os.path.join(md_path, 'gen_0_md.out')
         encode_cfg_parallel(train_cfg, gen_0_data_out, scheduler.sus2_mlp_exe, gen_0_mtp, encoding_cores, scheduler.train_env)
-        des_out2pkl(gen_0_data_out, 'gen_0_database', num_ele, mtp_type, mtp_path, body_name_list, train_path)
-        des_out2pkl(gen_0_md_out, 'gen_0_md', num_ele, mtp_type, mtp_path, body_name_list, md_path)
-        if mean_descriptor_enabled:
-            mean_des_out2pkl(gen_0_data_out, 'gen_0_database', num_ele, mtp_type, mtp_path, body_name_list, train_path)
-            mean_des_out2pkl(gen_0_md_out, 'gen_0_md', num_ele, mtp_type, mtp_path, body_name_list, md_path)
+        gen0_train_store = build_descriptor_store(gen_0_data_out, 'gen_0_database', ele, mtp_type, mtp_path, body_name_list, train_path, mean_enabled=mean_descriptor_enabled)
+        gen0_md_store = build_descriptor_store(gen_0_md_out, 'gen_0_md', ele, mtp_type, mtp_path, body_name_list, md_path, mean_enabled=mean_descriptor_enabled)
 
-    des_out2pkl(data_out, 'database', num_ele, mtp_type, mtp_path, body_name_list,train_path)
-    des_out2pkl(md_out, 'md', num_ele, mtp_type, mtp_path, body_name_list,md_path)
-    if mean_descriptor_enabled:
-        mean_des_out2pkl(data_out, 'database', num_ele, mtp_type, mtp_path, body_name_list, train_path)
-        mean_des_out2pkl(md_out, 'md', num_ele, mtp_type, mtp_path, body_name_list, md_path)
+    train_store = build_descriptor_store(data_out, 'database', ele, mtp_type, mtp_path, body_name_list, train_path, mean_enabled=mean_descriptor_enabled)
+    md_store = build_descriptor_store(md_out, 'md', ele, mtp_type, mtp_path, body_name_list, md_path, mean_enabled=mean_descriptor_enabled)
 
     large_need_index_list = []
     large_classes_num = []
@@ -449,9 +452,10 @@ def main_sample_flow(
         )
 
     for body in body_list:
+        stage_progress('coverage_and_candidates_' + body)
         body_dimension_tasks = []
-        data_base_data = os.path.join(train_path, f"database_{body}_body_coding_zlib.pkl")
-        md_data = os.path.join(md_path, f"md_{body}_body_coding_zlib.pkl")
+        data_base_data = train_store.body(body)
+        md_data = md_store.body(body)
         md_decoded = ensure_decoded(md_data)
         start = time.time()
         large_zero_freq_intervals_list, large_max_min, large_bins = data_base_distribution(
@@ -468,8 +472,8 @@ def main_sample_flow(
         print(f'body_{body}_data_base_distribution_time:', end - start)
 
         if int(gen_num) != 0 and int(main_num) != 0:
-            data_temp = os.path.join(train_path, f"gen_0_database_{body}_body_coding_zlib.pkl")
-            md_data_temp = os.path.join(md_path, f"gen_0_md_{body}_body_coding_zlib.pkl")
+            data_temp = gen0_train_store.body(body)
+            md_data_temp = gen0_md_store.body(body)
             a, b, c = data_base_distribution(
                 data_temp,
                 dq_width,
@@ -608,10 +612,10 @@ def main_sample_flow(
 
         large_need_index_list.append(need_index_list)
         large_classes_num.append(len(need_index_list))
-        temp = []
+        temp = set()
         for a in need_index_list:
-            temp = temp + list(a)
-        large_classes_stru_num.append(len(list(set(temp))))
+            temp.update(a)
+        large_classes_stru_num.append(len(temp))
 
         large_no_set_need_index_list.append(new_no_set_need_index_list)
         ori_large_no_set_need_index_list.append(no_set_need_index_list)
@@ -740,7 +744,6 @@ def main_sample_flow(
         new_tt = select_index
     else:
         new_tt = min_cover_index
-    atoms = list(iread(xyz_out_file_path))
     # print(new_tt)
 
     if selection_budget_scope == "per_configuration":
@@ -833,6 +836,8 @@ def main_sample_flow(
         )
         total_select_index = []
 
+    stage_progress('selected_frame_output')
+    atoms = SelectedFrames(xyz_out_file_path, total_select_index)
     total_select_index, npt_filter_stats = filter_selected_indices(
         atoms,
         dirs,
@@ -931,9 +936,6 @@ if __name__ == '__main__':
     #     print(f'type_coverage_rate:{type_coverage_rate}')
     # tt = find_min_cover_set(large_need_index_list)
     # print(len(tt))
-
-
-
 
 
 

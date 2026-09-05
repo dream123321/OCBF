@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections import Counter
+import gzip
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -46,6 +48,7 @@ class ArtifactBundler:
         self.summary = merged
         self.bundle_dir = self._resolve_output_dir(self.summary["output_dir"])
         self.manifest = {
+            "status": "complete",
             "bundle_dir": str(self.bundle_dir),
             "copied": {},
             "missing": {},
@@ -65,14 +68,17 @@ class ArtifactBundler:
         self._collect_source_directories()
         self._collect_models_and_analysis()
         manifest_path = self.bundle_dir / "manifest.json"
-        manifest_path.write_text(json.dumps(self.manifest, indent=2), encoding="utf-8")
+        temporary = manifest_path.with_name(manifest_path.name + ".tmp")
+        temporary.write_text(json.dumps(self.manifest, indent=2), encoding="utf-8")
+        os.replace(temporary, manifest_path)
+        self._cleanup_coverage_intermediates()
         return manifest_path
 
     def _resolve_output_dir(self, raw_path):
         path = Path(raw_path)
         if path.is_absolute():
             return path
-        return (self.run_dir / path).resolve()
+        return (self.run_dir.parent / path).resolve()
 
     def _copy_file(self, source: Path, destination: Path, manifest_key: str):
         source = Path(source)
@@ -111,6 +117,21 @@ class ArtifactBundler:
             return
         destination.mkdir(parents=True, exist_ok=True)
         shutil.copytree(source, destination, dirs_exist_ok=True)
+        self.manifest["copied"][manifest_key] = str(destination)
+
+    def _copy_gzip(self, source: Path, destination: Path, manifest_key: str):
+        source = Path(source)
+        if not source.exists():
+            self.manifest["missing"][manifest_key] = str(source)
+            return
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(destination.name + ".tmp")
+        with open(source, "rb") as reader, gzip.open(temporary, "wb", compresslevel=9) as writer:
+            shutil.copyfileobj(reader, writer, length=1024 * 1024)
+        with gzip.open(temporary, "rb") as reader:
+            while reader.read(1024 * 1024):
+                pass
+        os.replace(temporary, destination)
         self.manifest["copied"][manifest_key] = str(destination)
 
     def _dataset_config(self):
@@ -277,7 +298,7 @@ class ArtifactBundler:
                 data_origin="existing",
             )
 
-        if self._builder_enabled():
+        if self._builder_enabled() and builder_added:
             builder_output = datasets_dir / self.DATASET_EXPORTS["builder_dataset"]["filename"]
             builder_export = [self._annotate(atoms, "builder", main=-1) for atoms in builder_added]
             self._write_xyz(builder_output, builder_export)
@@ -476,10 +497,38 @@ class ArtifactBundler:
         coverage_cfg = dict(self.config.get("coverage_plot") or {})
         if coverage_cfg.get("enabled"):
             coverage_dir = self.run_dir / coverage_cfg.get("output_dir", "xyz_pca_coverage_results")
-            self._copy_tree(coverage_dir, analysis_dir / "coverage", "analysis.coverage")
             coverage_query_dir = self.run_dir / "coverage_query_lammps"
-            self._copy_tree(
-                coverage_query_dir,
-                analysis_dir / "coverage_query_lammps",
-                "analysis.coverage_query_lammps",
+            coverage_output = analysis_dir / "coverage"
+            for source in sorted(coverage_dir.glob("combined_pca_coverage_*.jpg")):
+                self._copy_file(source, coverage_output / source.name, f"analysis.coverage.{source.name}")
+            for name in ("coverage_summary.csv", "coverage_remark.txt"):
+                self._copy_file(coverage_dir / name, coverage_output / name, f"analysis.coverage.{name}")
+            self._copy_file(
+                coverage_query_dir / "query_manifest.json",
+                coverage_output / "query_manifest.json",
+                "analysis.coverage.query_manifest",
             )
+            self._copy_gzip(
+                coverage_query_dir / "query.xyz",
+                coverage_output / "query.xyz.gz",
+                "analysis.coverage.query_xyz",
+            )
+
+    def _cleanup_coverage_intermediates(self):
+        coverage_cfg = dict(self.config.get("coverage_plot") or {})
+        if not coverage_cfg.get("enabled"):
+            return
+        coverage_dir = (self.run_dir / coverage_cfg.get("output_dir", "xyz_pca_coverage_results")).resolve()
+        query_dir = (self.run_dir / "coverage_query_lammps").resolve()
+        for path in (
+            coverage_dir / "descriptors",
+            coverage_dir / "split_xyz",
+            coverage_dir / "pca_txt",
+            query_dir / "runs",
+        ):
+            resolved = path.resolve()
+            if resolved.is_relative_to(self.run_dir) and resolved.is_dir():
+                shutil.rmtree(resolved)
+        query_xyz = query_dir / "query.xyz"
+        if query_xyz.exists() and query_xyz.resolve().is_relative_to(self.run_dir):
+            query_xyz.unlink()

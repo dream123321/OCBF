@@ -19,5 +19,6 @@ symmetry                                0
 #out_stru                               1
 cal_force                               1
 cal_stress                              1 
+out_chg                                 1
 pseudo_dir      /work/phy-huangj/apps/ordinary/SG15_ONCV_v1.0_upf
 orbital_dir     /work/phy-huangj/apps/ordinary/SG15-Version1p0__StandardOrbitals-Version2p0

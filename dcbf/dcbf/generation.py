@@ -32,13 +32,17 @@ from .das.mkdir import mkdir_vasp
 from .das.other import end_yaml, mkdir, remove, touch
 from .das.sample_xyz import sample_main
 from .das.scf_lmp_data import collect_dft_data
-from .das.train_mlp import pre_train_mlp, start_train, update_mlp_from_current_batch
+from .das.train_mlp import (
+    pre_train_mlp,
+    start_train,
+    training_task_dirs,
+    update_mlp_from_current_batch,
+)
 from .das.work_dir import (
     bsub_dir,
     check_filter_xyz_0,
     check_finish,
     check_scf,
-    deepest_dir,
     delete_dump,
     scf_dir,
     submit_lammps_task,
@@ -55,6 +59,49 @@ from .npt_volume_filter import (
 )
 from .path_names import DFT_WORK_DIR, MD_WORK_DIR, SUS2_MODEL_DIR
 from .runtime_config import build_scheduler_spec, load_runtime_config
+from .training_dataset import TrainingDatasetStore
+from .raw_dft_archive import RawDFTArchiveManager, load_collection_cache, write_collection_cache
+from .das.scf_filter_sources import load_scf_filter_sources
+
+
+GENERATION_DESCRIPTOR_STORE_PATHS = (
+    ("train_mlp", "database_descriptor_store"),
+    ("train_mlp", "gen_0_database_descriptor_store"),
+    (MD_WORK_DIR, "md_descriptor_store"),
+    (MD_WORK_DIR, "gen_0_md_descriptor_store"),
+)
+
+
+def cleanup_generation_descriptor_stores(workspace, logger):
+    workspace = Path(workspace)
+    removed = []
+    failed = []
+    for relative_parts in GENERATION_DESCRIPTOR_STORE_PATHS:
+        path = workspace.joinpath(*relative_parts)
+        if not path.exists() and not path.is_symlink():
+            continue
+        try:
+            if path.is_symlink():
+                path.unlink()
+            elif path.is_dir():
+                shutil.rmtree(path)
+            else:
+                raise OSError("expected a descriptor-store directory")
+            removed.append(str(path))
+        except OSError as exc:
+            failed.append({"path": str(path), "error": str(exc)})
+            logger.warning(
+                "Generation descriptor-store cleanup failed: path=%s error=%s",
+                path,
+                exc,
+            )
+    if removed:
+        logger.info(
+            "Generation descriptor stores cleaned: removed=%s failed=%s",
+            len(removed),
+            len(failed),
+        )
+    return {"removed": removed, "failed": failed}
 
 
 class GenerationRunner:
@@ -100,7 +147,7 @@ class GenerationRunner:
     def _validate_training_outputs(self):
         gen_num = self.generation_index
         train_dirs = []
-        for train_dir in deepest_dir(str(self.workspace), "train_mlp"):
+        for train_dir in training_task_dirs(self.workspace):
             logout_path = Path(train_dir) / "logout"
             if logout_path.exists():
                 train_dirs.append(train_dir)
@@ -133,7 +180,7 @@ class GenerationRunner:
             return []
 
         metrics_list = []
-        for train_dir in deepest_dir(str(workspace), "train_mlp"):
+        for train_dir in training_task_dirs(workspace):
             logout_path = Path(train_dir) / "logout"
             if not logout_path.exists():
                 continue
@@ -485,7 +532,7 @@ class GenerationRunner:
         return selected_count, self.candidate_pool.count()
 
     def _candidate_trigger_threshold(self):
-        train_cfg = self.workspace / "train_mlp" / "train.cfg"
+        train_cfg = TrainingDatasetStore.from_generation(self.workspace).global_cfg
         base_structure_count = count_cfg_structures(train_cfg)
         threshold, description = resolve_candidate_trigger(
             self.parameter.get("candidate_trigger"),
@@ -654,17 +701,55 @@ class GenerationRunner:
         current = self.workspace / DFT_WORK_DIR / "scf" / "filter"
         out_name = self.workspace / DFT_WORK_DIR / "scf_filter.xyz"
         ori_out_name = self.workspace / DFT_WORK_DIR / "ori_scf_filter.xyz"
+        archive_manager = RawDFTArchiveManager(
+            self.workspace,
+            self.scheduler.scf_cal_engine,
+            self.logger,
+        )
+        cached = load_collection_cache(self.workspace, out_name, current)
+        if cached is not None:
+            source_manifest = load_scf_filter_sources(out_name, required=False)
+            if source_manifest is None:
+                self.logger.warning(
+                    "Cached SCF collection predates strict raw-DFT source mapping; "
+                    "existing tasks will not be archived or cleaned automatically."
+                )
+                return cached
+            archived_tasks = archive_manager.archive_completed_tasks(current, source_manifest)
+            excluded_tasks = archive_manager.archive_excluded_tasks(current, source_manifest)
+            if len(archived_tasks) != int(source_manifest["frame_count"]):
+                raise RuntimeError(
+                    "Raw DFT archive count does not match scf_filter.xyz: "
+                    f"archives={len(archived_tasks)} frames={source_manifest['frame_count']}"
+                )
+            archive_manager.cleanup_archived_tasks(archived_tasks)
+            archive_manager.cleanup_excluded_tasks(excluded_tasks)
+            return cached
+
         remove(str(out_name))
         result = self.scf2xyz(str(current), str(out_name), str(ori_out_name), force_threshold)
         ok_count, len_count, no_success_path, force_count, _ = result
+        source_manifest = load_scf_filter_sources(out_name, required=True)
+        archived_tasks = archive_manager.archive_completed_tasks(current, source_manifest)
+        excluded_tasks = archive_manager.archive_excluded_tasks(current, source_manifest)
+        if len(archived_tasks) != int(source_manifest["frame_count"]):
+            raise RuntimeError(
+                "Raw DFT archive count does not match scf_filter.xyz: "
+                f"archives={len(archived_tasks)} frames={source_manifest['frame_count']}"
+            )
         if len_count == 0:
             with open(self.workspace / "no_success_path.json", "w", encoding="utf-8") as handle:
                 json.dump(no_success_path, handle)
+            archive_manager.cleanup_archived_tasks(archived_tasks)
+            archive_manager.cleanup_excluded_tasks(excluded_tasks)
             raise RuntimeError(
                 "No successful SCF structures were collected. "
                 f"completed_tasks={ok_count}, force_threshold_count={force_count}. "
                 f"See {self.workspace / 'no_success_path.json'}"
             )
+        write_collection_cache(self.workspace, result, current)
+        archive_manager.cleanup_archived_tasks(archived_tasks)
+        archive_manager.cleanup_excluded_tasks(excluded_tasks)
         return result
 
     def _run_scf_stage_without_encoding(self, end_state):
@@ -775,4 +860,5 @@ class GenerationRunner:
         self._persist_end_state()
         self._run_candidate_batch_stage()
         delete_dump(dirs_1)
+        cleanup_generation_descriptor_stores(self.workspace, self.logger)
         touch(str(self.workspace), "__ok__")

@@ -1,6 +1,4 @@
 import os
-import shutil
-
 from ase.io import read
 import numpy as np
 
@@ -29,9 +27,5 @@ def collect_efs(input_path):
     atoms.info["pbc"] = "T T T"
     atoms.arrays["forces"] = forces
     atoms.pbc = [True, True, True]
-
-    tmp_qe = os.path.join(input_path, "tmp_qe")
-    if os.path.isdir(tmp_qe):
-        shutil.rmtree(tmp_qe)
 
     return atoms

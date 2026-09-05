@@ -415,8 +415,9 @@ class DFTSUS2Comparator:
                 sus_volume = atoms_sus.get_volume()
                 if dft_volume <= 0 or sus_volume <= 0:
                     return None, None
-                dft_components = dft_components / dft_volume * EV_PER_A3_TO_GPA
-                sus_components = sus_components / sus_volume * EV_PER_A3_TO_GPA
+                # ASE uses tensile-positive stress: stress = -virial / volume.
+                dft_components = -dft_components / dft_volume * EV_PER_A3_TO_GPA
+                sus_components = -sus_components / sus_volume * EV_PER_A3_TO_GPA
             return dft_components, sus_components
         except (KeyError, TypeError, ValueError):
             return None, None
@@ -425,8 +426,8 @@ class DFTSUS2Comparator:
         """Return stress/virial components in both eV and GPa.
 
         The eV values are virial components.  The GPa values use the same
-        convention as the existing --stress-unit GPa path:
-        component_GPa = component_eV / volume * 160.21766208.
+        tensile-positive ASE convention used by --stress-unit GPa:
+        component_GPa = -component_eV / volume * 160.21766208.
         """
         try:
             dft_s = self._get_virial_matrix(atoms_dft)
@@ -449,8 +450,8 @@ class DFTSUS2Comparator:
                 dft_gpa = None
                 sus_gpa = None
             else:
-                dft_gpa = dft_ev / dft_volume * EV_PER_A3_TO_GPA
-                sus_gpa = sus_ev / sus_volume * EV_PER_A3_TO_GPA
+                dft_gpa = -dft_ev / dft_volume * EV_PER_A3_TO_GPA
+                sus_gpa = -sus_ev / sus_volume * EV_PER_A3_TO_GPA
 
             return {
                 'eV': (dft_ev, sus_ev),

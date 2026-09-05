@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -24,6 +24,17 @@ from .encode.dimension_min_cover import (
     normalize_dimension_min_cover_workers,
     solve_dimension_tasks,
 )
+from .encode.compact_indices import find_multi_cover_set_compact, group_compact_indices
+from .encode.descriptor_store import (
+    DescriptorRows,
+    build_descriptor_store,
+    column,
+    concatenate_rows,
+    descriptor_store_signature,
+    file_fingerprint,
+    load_descriptor_store,
+    values_and_indices,
+)
 from .encode.mlp_encode_sample_flow import md_extract
 from .encode.mlp_encoding_extract import decode, des_out2pkl
 from .fast_extxyz import (
@@ -37,6 +48,7 @@ from .fast_extxyz import (
     write_position_cfg_parts,
 )
 from .mtp import normalize_mtp_type
+from .memory_guard import MIB, atomic_json, descriptor_guard, require_memory, stage_progress, tree_memory
 from .runtime_config import load_json_config
 from .selection.core import group_structure_indices_by_interval
 
@@ -258,6 +270,12 @@ class DCBFReducer:
         )
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self.encoding_seconds = 0.0
+        self.descriptor_cache_dir = self.work_dir / "descriptor_cache"
+        self.descriptor_cache_dir.mkdir(parents=True, exist_ok=True)
+        self._descriptor_sources = {}
+        self._descriptor_cache_records = []
+        self._peak_memory_bytes = tree_memory(os.getpid())
+        self._output_temporary_paths = []
         self._fast_xyz_indexes = {}
         self._fast_xyz_fallbacks = []
         self._fast_xyz_fallback_keys = set()
@@ -554,14 +572,14 @@ class DCBFReducer:
         return width_lists
 
     def _distribution_with_widths(self, array_data, width_list):
-        D = len(array_data[0])
+        values, _ = values_and_indices(array_data)
+        D = values.dimensions if isinstance(values, DescriptorRows) else values.shape[1]
         zero_freq_intervals_list = []
         max_min = []
         bins = []
-        array_data = np.asarray(array_data, dtype=float)
 
         for dim in range(D):
-            new_data = array_data[:, dim]
+            new_data = column(values, dim)
             data_max = float(np.max(new_data))
             data_min = float(np.min(new_data))
             max_min.append([data_max, data_min])
@@ -587,10 +605,9 @@ class DCBFReducer:
         large_bins = []
 
         for type_index, type_atoms in enumerate(train_data):
-            if type_atoms:
-                stru_temp = [atom[:-1] for atom in type_atoms]
+            if len(type_atoms):
                 widths = width_lists_by_type[type_index] if type_index < len(width_lists_by_type) else []
-                zero_freq_intervals_list, max_min, bins = self._distribution_with_widths(stru_temp, widths)
+                zero_freq_intervals_list, max_min, bins = self._distribution_with_widths(type_atoms, widths)
             else:
                 zero_freq_intervals_list, max_min, bins = [], [], []
             large_zero_freq_intervals_list.append(zero_freq_intervals_list)
@@ -611,15 +628,15 @@ class DCBFReducer:
         out_dir = Path(temp_dir_obj.name) if temp_dir_obj is not None else (self.work_dir / "iw_reference")
         out_dir.mkdir(parents=True, exist_ok=True)
         try:
-            self._encode_xyz_to_pickles(reference_xyz, "iw_ref", out_dir)
+            source = self._descriptor_source(reference_xyz, "iw_ref", out_dir)
             self.fixed_interval_widths = {}
             body_widths = {}
             for body in self.body_list:
-                data_base_data = out_dir / f"iw_ref_{body}_body_coding_zlib.pkl"
-                if not data_base_data.exists():
+                data_base_data = self._descriptor_body(source, body)
+                if data_base_data is None:
                     continue
                 _, large_max_min, large_bins = data_base_distribution(
-                    str(data_base_data),
+                    data_base_data,
                     self.dq_width,
                     self.dq_width_method,
                     body,
@@ -664,6 +681,14 @@ class DCBFReducer:
             start = stop
         return [group for group in groups if group]
 
+    def _preflight_ase_load(self, paths, stage):
+        estimated = 256 * MIB
+        for path in paths:
+            if path is not None and Path(path).exists():
+                estimated += Path(path).stat().st_size * 3
+        stage_progress(stage, input_path=next((path for path in paths if path is not None), None))
+        require_memory(estimated)
+
     def _build_chunk_ranges(self, total_count):
         if total_count <= 0:
             return []
@@ -681,6 +706,7 @@ class DCBFReducer:
 
     def _encode_xyz_to_pickles_ase(self, xyz_path, prefix, out_dir):
         self._used_ase_xyz_io = True
+        self._preflight_ase_load([xyz_path], "reduce_ase_descriptor_load")
         atoms = list(iread(str(xyz_path)))
         cfg_path = out_dir / f"{prefix}.cfg"
         out_path = out_dir / f"{prefix}.out"
@@ -831,6 +857,124 @@ class DCBFReducer:
         finally:
             self.encoding_seconds += time.perf_counter() - start
 
+    def _descriptor_cache_key(self, xyz_path):
+        resolved = str(Path(xyz_path).resolve())
+        return hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:20]
+
+    def _descriptor_signature(self, xyz_path):
+        return descriptor_store_signature(
+            [],
+            self.elements,
+            self.mtp_type,
+            self.mtp_path,
+            self.body_list,
+            mean_enabled=False,
+            source_fingerprint=file_fingerprint(xyz_path),
+        )
+
+    def _encode_xyz_to_store(self, xyz_path):
+        xyz_path = Path(xyz_path).resolve()
+        key = str(xyz_path)
+        cached = self._descriptor_sources.get(key)
+        if cached is not None:
+            return cached
+
+        frame_index = self._get_fast_xyz_index(xyz_path)
+        if frame_index is None:
+            return None
+        if not frame_index.descriptor_compatible:
+            self._record_fast_xyz_fallback(
+                xyz_path,
+                "descriptor conversion",
+                frame_index.descriptor_reason or "unsupported EXTXYZ descriptor fields",
+            )
+            return None
+
+        cache_dir = self.descriptor_cache_dir / self._descriptor_cache_key(xyz_path)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        source_fingerprint = file_fingerprint(xyz_path)
+        signature = self._descriptor_signature(xyz_path)
+        store = load_descriptor_store(cache_dir, "data", signature)
+        cache_reused = store is not None
+        started = time.perf_counter()
+        if store is None:
+            out_path = self._encode_xyz_to_pickles_fast(
+                xyz_path,
+                "data",
+                cache_dir,
+                frame_index,
+            )
+            store = build_descriptor_store(
+                out_path,
+                "data",
+                self.elements,
+                self.mtp_type,
+                self.mtp_path,
+                self.body_list,
+                cache_dir,
+                mean_enabled=False,
+                source_fingerprint=source_fingerprint,
+            )
+            if file_fingerprint(xyz_path) != source_fingerprint:
+                raise RuntimeError(f"Reduce input changed during descriptor encoding: {xyz_path}")
+            self.encoding_seconds += time.perf_counter() - started
+        cache_bytes = sum(
+            path.stat().st_size
+            for path in store.path.rglob("*")
+            if path.is_file()
+        )
+        self._descriptor_cache_records.append(
+            {
+                "input": key,
+                "store": str(store.path),
+                "cache_reused": bool(cache_reused),
+                "cache_bytes": int(cache_bytes),
+                "frame_count": int(store.manifest.get("frame_count", 0)),
+            }
+        )
+        self._descriptor_sources[key] = store
+        stage_progress("reduce_descriptor_ready", store.manifest.get("frame_count", 0), xyz_path)
+        return store
+
+    def _descriptor_source(self, xyz_path, prefix, out_dir):
+        store = self._encode_xyz_to_store(xyz_path)
+        if store is not None:
+            return store
+        self._encode_xyz_to_pickles(xyz_path, prefix, out_dir)
+        return {
+            body: out_dir / f"{prefix}_{body}_body_coding_zlib.pkl"
+            for body in self.body_list
+        }
+
+    @staticmethod
+    def _descriptor_body(source, body):
+        if hasattr(source, "body"):
+            return source.body(body)
+        path = source.get(body)
+        if path is None:
+            return None
+        if isinstance(path, list):
+            return path
+        if not path.exists():
+            return None
+        return path
+
+    @staticmethod
+    def _combine_body_rows(sources, body):
+        rows_by_element = []
+        body_sources = [source.body(body) for source in sources if source is not None]
+        if not body_sources:
+            return rows_by_element
+        for element_index in range(len(body_sources[0])):
+            rows_by_element.append(
+                concatenate_rows([source[element_index] for source in body_sources])
+            )
+        return rows_by_element
+
+    def _update_peak_memory(self):
+        self._peak_memory_bytes = max(self._peak_memory_bytes, tree_memory(os.getpid()))
+        return self._peak_memory_bytes
+
     def _resolve_histogram_bins(self, values):
         if self.dq_width_method == "Freedman_Diaconis":
             return Freedman_Diaconis_bins(values, dq_width_factor=self.dq_width_factor)
@@ -878,47 +1022,7 @@ class DCBFReducer:
         return intervals, targets
 
     def _find_multi_cover_set(self, classes, targets):
-        if not classes:
-            return []
-        if len(classes) != len(targets):
-            raise ValueError("Internal error: classes and targets length mismatch")
-
-        remaining = [max(0, int(target)) for target in targets]
-        class_counts = []
-        structure_to_classes = defaultdict(list)
-        for class_index, bucket in enumerate(classes):
-            counts = defaultdict(int)
-            for raw_index in bucket:
-                counts[int(raw_index)] += 1
-            class_counts.append(counts)
-            for structure_index, count in counts.items():
-                structure_to_classes[structure_index].append((class_index, count))
-
-        selected = []
-        available = set(structure_to_classes)
-        while available and any(value > 0 for value in remaining):
-            best_index = None
-            best_score = 0
-            for structure_index in available:
-                score = 0
-                for class_index, count in structure_to_classes[structure_index]:
-                    if remaining[class_index] > 0:
-                        score += min(count, remaining[class_index])
-                if score > best_score or (
-                    score == best_score and best_index is not None and structure_index < best_index
-                ):
-                    best_index = structure_index
-                    best_score = score
-            if best_index is None or best_score <= 0:
-                break
-
-            selected.append(best_index)
-            available.remove(best_index)
-            for class_index, count in structure_to_classes[best_index]:
-                if remaining[class_index] > 0:
-                    remaining[class_index] = max(0, remaining[class_index] - count)
-
-        return selected
+        return find_multi_cover_set_compact(classes, targets)
 
     def _run_dimension_min_cover(self, tasks, label):
         selected, stats, _ = solve_dimension_tasks(
@@ -954,31 +1058,36 @@ class DCBFReducer:
         out_dir = Path(temp_dir_obj.name) if temp_dir_obj is not None else (self.work_dir / "direct_intermediate")
         out_dir.mkdir(parents=True, exist_ok=True)
         try:
-            self._encode_xyz_to_pickles(candidate_xyz_path, "database", out_dir)
+            source = self._descriptor_source(candidate_xyz_path, "database", out_dir)
             progress.update(1, "encoding-complete")
 
             classes = []
             class_targets = []
             dimension_tasks = []
             for body in self.body_list:
-                data_base_data = out_dir / f"database_{body}_body_coding_zlib.pkl"
-                if not data_base_data.exists():
+                data_base_data = self._descriptor_body(source, body)
+                if data_base_data is None:
                     continue
-                decoded = decode(str(data_base_data))
+                decoded = decode(data_base_data)
                 for element_index, type_atoms in enumerate(decoded):
-                    if not type_atoms:
+                    if not len(type_atoms):
                         continue
-                    array_data = np.asarray([atom[:-1] for atom in type_atoms], dtype=float)
-                    stru_indexs = [int(atom[-1]) for atom in type_atoms]
-                    if array_data.ndim != 2 or array_data.shape[0] == 0:
+                    array_data, stru_indexs = values_and_indices(type_atoms)
+                    dimensions = (
+                        array_data.dimensions
+                        if isinstance(array_data, DescriptorRows)
+                        else array_data.shape[1]
+                    )
+                    if len(type_atoms) == 0 or dimensions == 0:
                         continue
-                    for dim in range(array_data.shape[1]):
-                        intervals, targets = self._build_occupied_intervals_with_targets(array_data[:, dim])
+                    for dim in range(dimensions):
+                        dimension_values = column(array_data, dim)
+                        intervals, targets = self._build_occupied_intervals_with_targets(dimension_values)
                         if not intervals:
                             continue
-                        grouped = group_structure_indices_by_interval(
+                        grouped = group_compact_indices(
                             stru_indexs,
-                            array_data[:, dim].tolist(),
+                            dimension_values,
                             intervals,
                         )
                         dimension_classes = [] if self.dimension_min_cover_workers != 0 else None
@@ -1008,6 +1117,7 @@ class DCBFReducer:
                                 }
                             )
             progress.update(2, f"class_count={len(classes)}")
+            self._update_peak_memory()
 
             if not classes:
                 progress.update(3, "no-classes")
@@ -1029,11 +1139,82 @@ class DCBFReducer:
             elif not self.keep_intermediate and out_dir.exists():
                 shutil.rmtree(out_dir, ignore_errors=True)
 
+    def _select_descriptor_sources(
+        self,
+        train_source,
+        candidate_source,
+        candidate_count,
+        stage_label=None,
+        source_label=None,
+    ):
+        if candidate_count == 0:
+            return []
+
+        classes = []
+        dimension_tasks = []
+        stage_body_widths = {}
+        for body in self.body_list:
+            data_base_data = self._descriptor_body(train_source, body)
+            md_data = self._descriptor_body(candidate_source, body)
+            if data_base_data is None or md_data is None:
+                continue
+            if self.dynamic_dq_width:
+                large_zero_freq_intervals_list, large_max_min, large_bins = data_base_distribution(
+                    data_base_data,
+                    self.dq_width,
+                    self.dq_width_method,
+                    body,
+                    plot_model=False,
+                    dq_width_factor=self.dq_width_factor,
+                    state_population=self.state_population,
+                )
+                stage_body_widths[body] = self._extract_width_lists(large_max_min, large_bins)
+            else:
+                self._prepare_fixed_interval_widths()
+                width_lists = self.fixed_interval_widths.get(body, [])
+                large_zero_freq_intervals_list, large_max_min, large_bins = self._data_base_distribution_with_widths(
+                    data_base_data,
+                    width_lists,
+                )
+            _, dimension_classes, _, no_set_need_index_list = md_extract(
+                md_data,
+                large_zero_freq_intervals_list,
+                large_max_min,
+                large_bins,
+            )
+            classes.extend(no_set_need_index_list)
+            if self.dimension_min_cover_workers != 0:
+                dimension_tasks.extend(
+                    build_dimension_tasks(
+                        dimension_classes,
+                        body,
+                        self.elements,
+                    )
+                )
+
+        if self.dynamic_dq_width and stage_label is not None and stage_body_widths:
+            self.interval_width_history.append(
+                {
+                    "stage": stage_label,
+                    "source_xyz": str(source_label) if source_label is not None else None,
+                    "dynamic_dq_width": True,
+                    "body_widths": stage_body_widths,
+                }
+            )
+        self._update_peak_memory()
+        if not classes:
+            return []
+        if self.dimension_min_cover_workers != 0:
+            return self._run_dimension_min_cover(
+                dimension_tasks,
+                stage_label or "reference_guided",
+            )
+        return sorted(set(int(index) for index in find_min_cover_set(classes)))
+
     def _select_indices(self, train_xyz_path, candidate_xyz_path, stage_label=None):
         candidate_count = self._structure_count(candidate_xyz_path)
         if candidate_count == 0:
             return []
-
         if self._structure_count(train_xyz_path) == 0:
             return list(range(candidate_count))
 
@@ -1045,68 +1226,15 @@ class DCBFReducer:
         out_dir = Path(temp_dir_obj.name) if temp_dir_obj is not None else (self.work_dir / "intermediate")
         out_dir.mkdir(parents=True, exist_ok=True)
         try:
-            self._encode_xyz_to_pickles(train_xyz_path, "database", out_dir)
-            self._encode_xyz_to_pickles(candidate_xyz_path, "md", out_dir)
-
-            classes = []
-            dimension_tasks = []
-            stage_body_widths = {}
-            for body in self.body_list:
-                data_base_data = out_dir / f"database_{body}_body_coding_zlib.pkl"
-                md_data = out_dir / f"md_{body}_body_coding_zlib.pkl"
-                if not data_base_data.exists() or not md_data.exists():
-                    continue
-                if self.dynamic_dq_width:
-                    large_zero_freq_intervals_list, large_max_min, large_bins = data_base_distribution(
-                        str(data_base_data),
-                        self.dq_width,
-                        self.dq_width_method,
-                        body,
-                        plot_model=False,
-                        dq_width_factor=self.dq_width_factor,
-                        state_population=self.state_population,
-                    )
-                    stage_body_widths[body] = self._extract_width_lists(large_max_min, large_bins)
-                else:
-                    self._prepare_fixed_interval_widths()
-                    width_lists = self.fixed_interval_widths.get(body, [])
-                    large_zero_freq_intervals_list, large_max_min, large_bins = self._data_base_distribution_with_widths(
-                        str(data_base_data),
-                        width_lists,
-                    )
-                _, dimension_classes, _, no_set_need_index_list = md_extract(
-                    str(md_data),
-                    large_zero_freq_intervals_list,
-                    large_max_min,
-                    large_bins,
-                )
-                classes.extend(no_set_need_index_list)
-                if self.dimension_min_cover_workers != 0:
-                    dimension_tasks.extend(
-                        build_dimension_tasks(
-                            dimension_classes,
-                            body,
-                            self.elements,
-                        )
-                    )
-
-            if self.dynamic_dq_width and stage_label is not None and stage_body_widths:
-                self.interval_width_history.append(
-                    {
-                        "stage": stage_label,
-                        "source_xyz": str(train_xyz_path),
-                        "dynamic_dq_width": True,
-                        "body_widths": stage_body_widths,
-                    }
-                )
-            if not classes:
-                return []
-            if self.dimension_min_cover_workers != 0:
-                return self._run_dimension_min_cover(
-                    dimension_tasks,
-                    stage_label or "reference_guided",
-                )
-            return sorted(set(int(index) for index in find_min_cover_set(classes)))
+            train_source = self._descriptor_source(train_xyz_path, "database", out_dir)
+            candidate_source = self._descriptor_source(candidate_xyz_path, "md", out_dir)
+            return self._select_descriptor_sources(
+                train_source,
+                candidate_source,
+                candidate_count,
+                stage_label=stage_label,
+                source_label=train_xyz_path,
+            )
         finally:
             if temp_dir_obj is not None:
                 temp_dir_obj.cleanup()
@@ -1179,6 +1307,7 @@ class DCBFReducer:
 
     def _run_single_ase(self):
         self._used_ase_xyz_io = True
+        self._preflight_ase_load([self.input_xyz, self.current_xyz], "reduce_ase_input_load")
         input_atoms = list(iread(str(self.input_xyz)))
         current_atoms = list(iread(str(self.current_xyz))) if self.current_xyz else []
 
@@ -1246,7 +1375,7 @@ class DCBFReducer:
         current_index = indexes[1] if len(indexes) > 1 else None
         return self._run_single_fast(input_index, current_index)
 
-    def _run_chunked_fast(self, input_index, current_index):
+    def _run_chunked_fast_legacy(self, input_index, current_index):
         input_count = len(input_index)
         current_count = len(current_index)
         selected_global_indices = set()
@@ -1336,8 +1465,110 @@ class DCBFReducer:
             },
         }
 
+    def _run_chunked_fast(self, input_index, current_index):
+        input_store = self._encode_xyz_to_store(self.input_xyz)
+        current_store = self._encode_xyz_to_store(self.current_xyz)
+        if input_store is None or current_store is None:
+            return self._run_chunked_fast_legacy(input_index, current_index)
+
+        input_count = len(input_index)
+        current_count = len(current_index)
+        selected_global_indices = set()
+        chunk_ranges = self._build_chunk_ranges(input_count)
+        progress = _ProgressTracker("reference-guided-reduce", len(chunk_ranges))
+
+        for chunk_id, (start, end) in enumerate(chunk_ranges):
+            if start >= end:
+                continue
+            candidate_source = {}
+            train_source = {}
+            selected_order = sorted(selected_global_indices)
+            for body in self.body_list:
+                input_rows = input_store.body(body)
+                current_rows = current_store.body(body)
+                candidate_source[body] = [
+                    rows.select_frame_range(start, end)
+                    for rows in input_rows
+                ]
+                train_rows = []
+                for element_index in range(len(input_rows)):
+                    parts = []
+                    if current_count:
+                        parts.append(current_rows[element_index])
+                    if selected_order:
+                        parts.append(input_rows[element_index].select_frames(selected_order))
+                    if not parts:
+                        parts.append(candidate_source[body][element_index])
+                    train_rows.append(concatenate_rows(parts))
+                train_source[body] = train_rows
+
+            selected_chunk_indices = self._select_descriptor_sources(
+                train_source,
+                candidate_source,
+                end - start,
+                stage_label=f"chunk_{chunk_id:05d}",
+                source_label=f"{self.current_xyz} + selected input frames",
+            )
+            for global_index in selected_chunk_indices:
+                global_index = int(global_index)
+                if start <= global_index < end:
+                    selected_global_indices.add(global_index)
+
+            progress.update(
+                chunk_id + 1,
+                f"selected={len(selected_global_indices)} "
+                f"remain={input_count - len(selected_global_indices)}",
+            )
+            stage_progress(
+                "reduce_reference_chunk",
+                chunk_id + 1,
+                self.input_xyz,
+                workers=self.dimension_min_cover_workers,
+            )
+            self._update_peak_memory()
+
+        selected_order = sorted(selected_global_indices)
+        output_selections = []
+        if self.append_current and current_count:
+            output_selections.append((current_index, current_index.all_indices()))
+        output_selections.append((input_index, selected_order))
+        output_count = write_indexed_frames(self.output_xyz, output_selections)
+        remain_count = write_indexed_frames(
+            self.remain_xyz,
+            [(input_index, complement_indices(input_count, selected_global_indices))],
+        )
+        return {
+            "mode": "reference_guided",
+            "chunk_size": self.chunk_size,
+            "using_default_universal_assets": self.using_default_universal_assets,
+            "mtp_path": str(self.mtp_path),
+            "mtp_species_count": self.mtp_species_count,
+            "element_count": len(self.elements),
+            "sort_elements_by_atomic_number": self.sort_elements_by_atomic_number,
+            "interval_ref_xyz": str(self.interval_ref_xyz) if self.interval_ref_xyz is not None else None,
+            "dq_width_method": self.dq_width_method,
+            "dq_width": self.dq_width,
+            "dq_width_factor": self.dq_width_factor,
+            "state_population": self.state_population,
+            "input_count": input_count,
+            "current_count": current_count,
+            "selected_from_input": len(selected_order),
+            "remain_from_input": remain_count,
+            "output_count": output_count,
+            "output_xyz": str(self.output_xyz),
+            "remain_xyz": str(self.remain_xyz),
+            "file_counts": {
+                "input_xyz": input_count,
+                "current_xyz": current_count,
+                "interval_ref_xyz": self._structure_count(self.interval_ref_xyz),
+                "output_xyz": output_count,
+                "remain_xyz": remain_count,
+            },
+        }
+
     def _run_chunked_ase(self):
         self._used_ase_xyz_io = True
+        self._preflight_ase_load([self.input_xyz, self.current_xyz], "reduce_ase_input_load")
         input_atoms = list(iread(str(self.input_xyz)))
         current_atoms = list(iread(str(self.current_xyz))) if self.current_xyz else []
 
@@ -1426,7 +1657,7 @@ class DCBFReducer:
             return self._run_chunked_ase()
         return self._run_chunked_fast(indexes[0], indexes[1])
 
-    def run(self):
+    def _run_impl(self):
         total_start = time.perf_counter()
         if self._mode_impl == "single":
             report = self._run_single()
@@ -1511,15 +1742,69 @@ class DCBFReducer:
             }
         if self.interval_width_history:
             report["interval_width_history"] = self.interval_width_history
-
-        self.report_json.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.report_json, "w", encoding="utf-8") as handle:
-            json.dump(report, handle, indent=2)
-        report["report_json"] = str(self.report_json)
-        print(
-            "[reduce] timing (hours): "
-            f"encoding={report['encoding_hours']:.6f}, "
-            f"processing={report['processing_hours']:.6f}, "
-            f"total={report['total_hours']:.6f}"
-        )
+        self._update_peak_memory()
+        report["descriptor_storage"] = {
+            "backend": "descriptor_store" if self._descriptor_cache_records else "legacy_pickle",
+            "source_count": len(self._descriptor_cache_records),
+            "cache_reused_count": sum(
+                int(item["cache_reused"]) for item in self._descriptor_cache_records
+            ),
+            "cache_bytes": sum(
+                int(item["cache_bytes"]) for item in self._descriptor_cache_records
+            ),
+            "sources": list(self._descriptor_cache_records),
+        }
+        report["memory"] = {
+            "peak_process_tree_bytes": int(self._peak_memory_bytes),
+        }
         return report
+
+    def run(self):
+        final_output = self.output_xyz
+        final_remain = self.remain_xyz
+        final_report = self.report_json
+        token = f"{os.getpid()}-{time.time_ns()}"
+        temporary_output = final_output.with_name(
+            f".{final_output.stem}.{token}.partial{final_output.suffix}"
+        )
+        temporary_remain = final_remain.with_name(
+            f".{final_remain.stem}.{token}.partial{final_remain.suffix}"
+        )
+        temporary_report = final_report.with_name(
+            f".{final_report.stem}.{token}.partial{final_report.suffix}"
+        )
+        for path in (temporary_output, temporary_remain, temporary_report):
+            path.parent.mkdir(parents=True, exist_ok=True)
+        self.output_xyz = temporary_output
+        self.remain_xyz = temporary_remain
+        self.report_json = temporary_report
+        succeeded = False
+        try:
+            with descriptor_guard(self.work_dir, task_type="reduce"):
+                report = self._run_impl()
+            report["output_xyz"] = str(final_output)
+            report["remain_xyz"] = str(final_remain)
+            report["report_json"] = str(final_report)
+            atomic_json(temporary_report, report)
+            os.replace(temporary_output, final_output)
+            os.replace(temporary_remain, final_remain)
+            os.replace(temporary_report, final_report)
+            succeeded = True
+            print(
+                "[reduce] timing (hours): "
+                f"encoding={report['encoding_hours']:.6f}, "
+                f"processing={report['processing_hours']:.6f}, "
+                f"total={report['total_hours']:.6f}"
+            )
+            return report
+        finally:
+            self.output_xyz = final_output
+            self.remain_xyz = final_remain
+            self.report_json = final_report
+            for path in (temporary_output, temporary_remain, temporary_report):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+            if succeeded and not self.keep_intermediate:
+                shutil.rmtree(self.descriptor_cache_dir, ignore_errors=True)

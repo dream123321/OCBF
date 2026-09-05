@@ -5,6 +5,7 @@
    tprnfor          = .true.
    outdir           = './tmp_qe'
    prefix           = 'qe'
+   disk_io          = 'nowf'
    pseudo_dir       = '/work/phy-huangj/apps/qe/pseudos/SSSP_1.3.0_PBE_efficiency'
 /
 &SYSTEM

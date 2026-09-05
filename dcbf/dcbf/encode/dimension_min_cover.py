@@ -8,7 +8,11 @@ from pathlib import Path
 import socket
 import time
 
+import numpy as np
+
 from .find_min_cover_set import find_min_cover_set
+from .compact_indices import IndexBucket, count_selected_indices, find_multi_cover_set_compact
+from ..memory_guard import MIB, current_guard, work_memory, require_memory, stage_progress
 
 
 def normalize_dimension_min_cover_workers(value) -> int:
@@ -30,7 +34,7 @@ def build_dimension_tasks(nested_classes, body, elements, prefix=(), nested_targ
     for element_index, dimension_classes in enumerate(nested_classes or []):
         element = elements[element_index] if element_index < len(elements) else f"type-{element_index}"
         for dimension, classes in enumerate(dimension_classes or []):
-            populated = [list(bucket) for bucket in (classes or []) if bucket]
+            populated = [bucket if isinstance(bucket, IndexBucket) else list(bucket) for bucket in (classes or []) if bucket]
             if not populated:
                 continue
             targets = None
@@ -108,10 +112,11 @@ def find_multi_cover_set(classes, targets):
 def _solve_dimension_task(task):
     started = time.perf_counter()
     targets = task.get("targets")
+    classes = task["classes"]
     if targets is None:
-        selected = find_min_cover_set(task["classes"])
+        selected = find_min_cover_set(classes)
     else:
-        selected = find_multi_cover_set(task["classes"], targets)
+        selected = find_multi_cover_set_compact(classes, targets)
     return {
         "key": tuple(task["key"]),
         "selected": sorted(set(int(index) for index in selected)),
@@ -173,6 +178,19 @@ def _cancel_pending(pending):
         future.cancel()
 
 
+def stop_pool(executor, children):
+    executor.shutdown(wait=False, cancel_futures=True)
+    for child in children:
+        if child.is_alive():
+            child.terminate()
+    deadline = time.monotonic() + 5
+    for child in children:
+        child.join(timeout=max(0, deadline - time.monotonic()))
+        if child.is_alive():
+            child.kill()
+            child.join(timeout=1)
+
+
 def prune_dimension_union(tasks, selected):
     started = time.perf_counter()
     selected = sorted(set(int(index) for index in selected))
@@ -186,7 +204,7 @@ def prune_dimension_union(tasks, selected):
             "elapsed_seconds": 0.0,
         }
 
-    selected_set = set(selected)
+    selected_array = np.asarray(selected, dtype=np.int64)
     target_by_state = []
     contribution_by_structure = defaultdict(dict)
     task_keys_by_structure = defaultdict(set)
@@ -204,12 +222,10 @@ def prune_dimension_union(tasks, selected):
                 continue
             state_index = len(target_by_state)
             target_by_state.append(target)
-            counts = defaultdict(int)
-            for raw_index in bucket:
-                structure_index = int(raw_index)
-                if structure_index in selected_set:
-                    counts[structure_index] += 1
-            for structure_index, count in counts.items():
+            counts = count_selected_indices(bucket, selected_array)
+            for selected_position in np.flatnonzero(counts):
+                structure_index = selected[int(selected_position)]
+                count = int(counts[selected_position])
                 contribution = 1 if raw_targets is None else count
                 contribution_by_structure[structure_index][state_index] = contribution
                 task_keys_by_structure[structure_index].add(task_index)
@@ -297,6 +313,13 @@ def solve_dimension_tasks(tasks, requested_workers):
     available_cpus, scheduler = detect_local_cpu_limit()
     worker_limit = available_cpus if requested_workers == -1 else requested_workers
     effective_workers = max(1, min(len(tasks), worker_limit, available_cpus))
+    guarded = current_guard() is not None
+    if guarded:
+        largest = max(sum(len(bucket) for bucket in task['classes']) for task in tasks)
+        per_task_bytes = 64 * MIB + largest * 96
+        require_memory(per_task_bytes)
+        effective_workers = min(effective_workers, max(1, work_memory() // per_task_bytes))
+        stage_progress('dimension_min_cover', workers=effective_workers)
     results = []
 
     if effective_workers == 1:
@@ -304,19 +327,25 @@ def solve_dimension_tasks(tasks, requested_workers):
             results.append(_solve_dimension_task(task))
     else:
         context = multiprocessing.get_context("fork")
-        max_in_flight = max(effective_workers, effective_workers * 2)
+        max_in_flight = effective_workers if guarded else effective_workers * 2
         task_iterator = iter(tasks)
         pending = {}
-        with ProcessPoolExecutor(max_workers=effective_workers, mp_context=context) as executor:
+        existing_children = {p.pid for p in multiprocessing.active_children()}
+        executor = ProcessPoolExecutor(max_workers=effective_workers, mp_context=context)
+        children = []
+        try:
             while len(pending) < max_in_flight:
                 try:
                     task = next(task_iterator)
                 except StopIteration:
                     break
                 pending[executor.submit(_solve_dimension_task, task)] = tuple(task["key"])
+            children = [p for p in multiprocessing.active_children() if p.pid not in existing_children]
 
             while pending:
-                completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+                completed, _ = wait(pending, timeout=2, return_when=FIRST_COMPLETED)
+                if guarded:
+                    require_memory(0)
                 for future in completed:
                     key = pending.pop(future)
                     try:
@@ -329,6 +358,13 @@ def solve_dimension_tasks(tasks, requested_workers):
                     except StopIteration:
                         continue
                     pending[executor.submit(_solve_dimension_task, task)] = tuple(task["key"])
+        except BaseException:
+            _cancel_pending(pending)
+            children = [p for p in multiprocessing.active_children() if p.pid not in existing_children]
+            stop_pool(executor, children)
+            raise
+        else:
+            executor.shutdown(wait=True)
 
     dimension_solve_seconds = time.perf_counter() - started
     results.sort(key=lambda item: item["key"])

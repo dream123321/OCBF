@@ -4,13 +4,26 @@ import sys
 import shutil
 from pathlib import Path
 import yaml
-from .file_conversion import xyz2cfg, merge_cfg
-from .work_dir import deepest_dir,check_finish
+from .work_dir import check_finish
 from ..path_names import DFT_WORK_DIR, SUS2_MODEL_DIR
 from ..mtp import write_mtp_template
+from ..training_dataset import TrainingDatasetStore
 
 
 BATCH_MERGED_MARKER = "__candidate_batch_merged__"
+
+
+def training_task_dirs(pwd):
+    train_root = Path(pwd) / "train_mlp"
+    if not train_root.is_dir():
+        return []
+    return [
+        str(path)
+        for path in sorted(
+            (path for path in train_root.iterdir() if path.is_dir() and path.name.isdigit()),
+            key=lambda path: int(path.name),
+        )
+    ]
 
 def mkdir(dir):
     if not os.path.exists(dir):
@@ -54,9 +67,8 @@ echo "total_runtime：$runtime s" >> time.txt"""
         file.write(total)
 
 
-def _copy_reference_generation(reference_path, train_mlp_path, mtp_path):
+def _copy_reference_generation(reference_path, mtp_path):
     reference_path = Path(reference_path)
-    shutil.copy(reference_path / 'train_mlp' / 'train.cfg', train_mlp_path)
     for source_mtp in (reference_path / SUS2_MODEL_DIR).glob('current*'):
         shutil.copy(source_mtp, mtp_path)
 
@@ -68,6 +80,8 @@ def _reset_training_dir_state(train_dir):
             file_path.unlink()
 
 def pre_train_mlp(pwd, mlp_nums, ele, ele_model,logger, scheduler):
+    training_store = TrainingDatasetStore.from_generation(pwd)
+    training_store.ensure_generation_link(pwd)
     mtp_path = os.path.join(pwd, SUS2_MODEL_DIR)
     mkdir(mtp_path)
     os.chdir(mtp_path)
@@ -92,7 +106,7 @@ def pre_train_mlp(pwd, mlp_nums, ele, ele_model,logger, scheduler):
                 ]
             )[-1]
             reference_generation = os.path.join(last_main_path, 'gen_'+str(last_main_gen_num))
-            _copy_reference_generation(reference_generation, train_mlp_path, mtp_path)
+            _copy_reference_generation(reference_generation, mtp_path)
             current_parameter_yaml = os.path.join(pwd, 'parameter.yaml')
             logger.info(f"main_{main_num} | gen_0: start{_format_current_md_schedule(current_parameter_yaml)}")
             return False
@@ -100,7 +114,6 @@ def pre_train_mlp(pwd, mlp_nums, ele, ele_model,logger, scheduler):
             parameter_yaml = os.path.join(main_dir, 'init', 'parameter.yaml')
             with open(parameter_yaml, 'r', encoding='utf-8') as handle:
                 data = yaml.safe_load(handle)
-            xyz2cfg(ele, ele_model, data['dataset_xyz_input'], os.path.join(train_mlp_path, 'train.cfg'))
             for i in range(mlp_nums):
                 sub_train_mlp_path = os.path.join(train_mlp_path, str(i))
                 mkdir(sub_train_mlp_path)
@@ -114,11 +127,11 @@ def pre_train_mlp(pwd, mlp_nums, ele, ele_model,logger, scheduler):
         else:
             last_gen = 'gen_'+str((int(gen_num)-1))
             last_gen_path = os.path.join(os.path.dirname(pwd),last_gen)
-            _copy_reference_generation(last_gen_path, train_mlp_path, mtp_path)
+            _copy_reference_generation(last_gen_path, mtp_path)
             logger.info(f'main_{main_num} | gen_{gen_num}: start')
             return False
     else:
-        dirs = deepest_dir(pwd, 'train_mlp')
+        dirs = training_task_dirs(pwd)
         if len(dirs) != 1:
             check_finish(dirs, logger, 'MLIP training completed.')
         else:
@@ -129,19 +142,17 @@ def pre_train_mlp(pwd, mlp_nums, ele, ele_model,logger, scheduler):
 def update_mlp_from_current_batch(pwd, mlp_nums, ele, ele_model, logger, scheduler):
     train_mlp_path = Path(pwd) / 'train_mlp'
     mtp_path = Path(pwd) / SUS2_MODEL_DIR
-    current_train_cfg = train_mlp_path / 'train.cfg'
+    training_store = TrainingDatasetStore.from_generation(pwd)
+    current_train_cfg = training_store.global_cfg
+    training_store.ensure_generation_link(pwd)
     scf_filter_xyz = Path(pwd) / DFT_WORK_DIR / 'scf_filter.xyz'
-    scf_filter_cfg = train_mlp_path / 'scf_filter.cfg'
     merged_marker = train_mlp_path / BATCH_MERGED_MARKER
 
     check(str(current_train_cfg))
     check(str(scf_filter_xyz))
 
     if not merged_marker.exists():
-        xyz2cfg(ele, ele_model, str(scf_filter_xyz), str(scf_filter_cfg))
-        merged_train_cfg = train_mlp_path / 'train_batch_merged.cfg'
-        merge_cfg(str(current_train_cfg), str(scf_filter_cfg), str(merged_train_cfg))
-        shutil.move(str(merged_train_cfg), str(current_train_cfg))
+        training_store.append_generation(pwd, scf_filter_xyz)
         merged_marker.touch()
 
     for source_mtp in mtp_path.glob('current*'):
@@ -157,7 +168,7 @@ def update_mlp_from_current_batch(pwd, mlp_nums, ele, ele_model, logger, schedul
     start_train(pwd, scheduler.task_submission_method, mlp_nums, logger)
 
 def start_train(pwd,task_submission_method, mlp_nums, logger):
-    dirs = deepest_dir(pwd,'train_mlp')
+    dirs = training_task_dirs(pwd)
     for a in dirs:
         if not os.path.exists(os.path.join(a,'__start__')):
             os.chdir(a)

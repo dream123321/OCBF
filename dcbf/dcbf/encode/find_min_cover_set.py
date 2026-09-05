@@ -1,4 +1,5 @@
 import math
+import os
 import random
 import time
 
@@ -23,6 +24,10 @@ def set_intersection(list1, list2):
 
 
 def find_min_cover_set(lists):
+    from ..memory_guard import MIB, current_guard, require_memory
+    guard = current_guard()
+    if guard is not None and guard.pid == os.getpid() and lists:
+        require_memory(64 * MIB + sum(len(bucket) for bucket in lists) * 96)
     return greedy_cover_elements(lists)
 
 

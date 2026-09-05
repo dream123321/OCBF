@@ -20,6 +20,7 @@ COMMAND_EXAMPLES = {
     "mp-search": "dcbf mp-search Li P S Cl --api-key YOUR_API_KEY",
     "run": "dcbf run dcbf.json",
     "reduce": "dcbf reduce reduce.json",
+    "raw-dft": "dcbf raw-dft pack task_1",
     "kill": "dcbf kill workspace",
 }
 

@@ -4,6 +4,11 @@ import shlex
 from .file_conversion import dump2cfg, merge_cfg_out
 from .cfg_descriptor_encode import _build_calc_descriptors_command
 import subprocess
+import tempfile
+import threading
+import multiprocessing
+from .dimension_min_cover import detect_local_cpu_limit, stop_pool
+from ..memory_guard import MIB, current_guard, work_memory, stage_progress
 
 
 def main_dump2cfg(path, cfg_name):
@@ -27,10 +32,46 @@ def _build_calc_descriptors_shell(sus2_mlp_exe, mtp_path, md_cfg, md_out, train_
     return command, rendered
 
 
-def mul_encode(pwd, mtp_path, dirs, cfg_name, out_name, sus2_mlp_exe, train_env=None):
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        cfg_names = [cfg_name for _ in dirs]
-        results = list(executor.map(main_dump2cfg, dirs, cfg_names))
+def mul_encode(pwd, mtp_path, dirs, cfg_name, out_name, sus2_mlp_exe, train_env=None, workers=None):
+    cpu_limit, _ = detect_local_cpu_limit()
+    worker_limit = min(len(dirs), cpu_limit, cpu_limit if workers is None else max(1, int(workers)))
+    if not dirs:
+        return []
+    if current_guard() is not None:
+        worker_limit = min(worker_limit, max(1, work_memory() // (256 * MIB)))
+    stage_progress('md_dump_conversion', input_path=dirs[0], workers=worker_limit)
+    results = [None] * len(dirs)
+    if worker_limit == 1:
+        results = [main_dump2cfg(path, cfg_name) for path in dirs]
+    else:
+        before = {p.pid for p in multiprocessing.active_children()}
+        executor = concurrent.futures.ProcessPoolExecutor(max_workers=worker_limit)
+        children = []
+        pending = {}
+        iterator = iter(enumerate(dirs))
+        try:
+            for _ in range(worker_limit):
+                index, path = next(iterator)
+                pending[executor.submit(main_dump2cfg, path, cfg_name)] = index
+            children = [p for p in multiprocessing.active_children() if p.pid not in before]
+            while pending:
+                done, _ = concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED)
+                for future in done:
+                    index = pending.pop(future)
+                    try:
+                        results[index] = future.result()
+                    except Exception as exc:
+                        raise RuntimeError(f'MD dump conversion failed for {dirs[index]}: {exc}') from exc
+                    item = next(iterator, None)
+                    if item is not None:
+                        index, path = item
+                        pending[executor.submit(main_dump2cfg, path, cfg_name)] = index
+        except BaseException:
+            children = [p for p in multiprocessing.active_children() if p.pid not in before]
+            stop_pool(executor, children)
+            raise
+        else:
+            executor.shutdown(wait=True)
 
     commands = []
     for path in dirs:
@@ -38,21 +79,39 @@ def mul_encode(pwd, mtp_path, dirs, cfg_name, out_name, sus2_mlp_exe, train_env=
         md_out = os.path.join(path, out_name)
         commands.append(_build_calc_descriptors_shell(sus2_mlp_exe, mtp_path, md_cfg, md_out, train_env=train_env))
 
-    processes = [
-        (
-            subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True),
-            rendered,
-        )
-        for command, rendered in commands
-    ]
+    cancelled = threading.Event()
+    stage_progress('md_descriptor_encoding', input_path=dirs[0], workers=worker_limit)
 
-    for process, rendered in processes:
-        _, stderr = process.communicate()
-        if process.returncode != 0:
-            raise RuntimeError(
-                f"calc-descriptors failed during mul_encode with exit code {process.returncode}: {rendered}\n"
-                f"{stderr[-2000:]}"
-            )
+    def run_command(item):
+        command, rendered = item
+        if cancelled.is_set():
+            return
+        with tempfile.TemporaryFile() as output:
+            try:
+                process = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT)
+            except Exception:
+                cancelled.set()
+                raise
+            while process.poll() is None:
+                if cancelled.wait(0.2):
+                    process.terminate()
+                    try:
+                        process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=3)
+                    return
+            if process.returncode:
+                cancelled.set()
+                output.seek(max(0, output.tell() - 2000))
+                raise RuntimeError(f'calc-descriptors failed during mul_encode with exit code {process.returncode}: {rendered}\n'
+                                   + output.read().decode('utf-8', 'replace'))
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_limit) as executor:
+        try:
+            list(executor.map(run_command, commands))
+        finally:
+            cancelled.set()
 
     merge_cfg_out(pwd, dirs, cfg_name, out_name)
     return results

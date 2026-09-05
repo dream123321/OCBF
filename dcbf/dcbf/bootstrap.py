@@ -13,7 +13,6 @@ from ase.io import iread, write
 import yaml
 
 from .dataset_builder import InitialDatasetBuilder
-from .das.file_conversion import cfg2xyz
 from .encode.coverage_policy import (
     normalize_selection_budget_scope,
     validate_selection_schedules,
@@ -689,28 +688,8 @@ class WorkspaceBootstrapper:
         if not workflow.get("output_xyz", True):
             return
 
-        main_list = [item for item in os.listdir(run_dir) if item.startswith("main_")]
-        if not main_list:
-            return
-        main_list = sorted(main_list, key=lambda item: int(item.replace("main_", "")))
-        last_main = main_list[-1]
-
-        gen_dir = Path(run_dir) / last_main
-        gen_list = [item for item in os.listdir(gen_dir) if item.startswith("gen_")]
-        gen_list = sorted(gen_list, key=lambda item: int(item.replace("gen_", "")))
-        last_gen = gen_list[-1]
-
         output_name = workflow.get("output_xyz_name", "all_sample_data.xyz")
         output_path = Path(run_dir) / output_name
-        if output_path.exists():
-            output_path.unlink()
+        from .training_dataset import TrainingDatasetStore
 
-        parameter_path = Path(run_dir) / "init" / "parameter.yaml"
-        with open(parameter_path, "r", encoding="utf-8") as handle:
-            yaml_data = yaml.safe_load(handle)
-        ele = yaml_data["ele"]
-        sort_ele = WorkspaceBootstrapper._coerce_bool(yaml_data.get("sort_ele", True), default=True)
-
-        train_cfg = Path(run_dir) / last_main / last_gen / "train_mlp" / "train.cfg"
-        cfg2xyz(ele, sort_ele, str(train_cfg), str(output_path))
-        WorkspaceBootstrapper._annotate_final_xyz_main_labels(run_dir, output_path, config, yaml_data)
+        TrainingDatasetStore(run_dir, config).export_final_xyz(output_path)

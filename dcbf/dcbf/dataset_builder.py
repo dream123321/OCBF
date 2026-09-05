@@ -25,6 +25,8 @@ from .das.work_dir import check_finish, check_scf, scf_dir
 from .path_names import DFT_WORK_DIR
 from .phonon_displacement import generate_phonopy_like_supercells
 from .runtime_config import build_scheduler_spec, normalize_scheduler_config
+from .raw_dft_archive import RawDFTArchiveManager, load_collection_cache, write_collection_cache
+from .das.scf_filter_sources import load_scf_filter_sources
 
 try:
     from pymlip.core import MTPCalactor, PyConfiguration
@@ -1258,22 +1260,59 @@ class InitialDatasetBuilder:
         collector = self._resolve_scf_handler()
         current = workspace / DFT_WORK_DIR / "scf" / "filter"
         labeled_output, original_output = self._scf_labeled_output_paths()
-        if labeled_output.exists():
-            labeled_output.unlink()
-        if original_output.exists():
-            original_output.unlink()
-        ok_count, len_count, no_success_paths, force_count, _ = collector(
-            str(current),
-            str(labeled_output),
-            str(original_output),
-            force_threshold,
+        archive_manager = RawDFTArchiveManager(
+            workspace,
+            self.scheduler.scf_cal_engine,
+            self.logger,
+            stage="init_dataset_build",
+            run_dir=self.run_dir,
+            config=self.config,
         )
+        archived_tasks = []
+        excluded_tasks = []
+        cached_result = load_collection_cache(workspace, labeled_output, current)
+        if cached_result is None:
+            if labeled_output.exists():
+                labeled_output.unlink()
+            if original_output.exists():
+                original_output.unlink()
+            result = collector(
+                str(current),
+                str(labeled_output),
+                str(original_output),
+                force_threshold,
+            )
+            source_manifest = load_scf_filter_sources(labeled_output, required=True)
+            archived_tasks = archive_manager.archive_completed_tasks(current, source_manifest)
+            excluded_tasks = archive_manager.archive_excluded_tasks(current, source_manifest)
+            write_collection_cache(workspace, result, current)
+        else:
+            result = cached_result
+            source_manifest = load_scf_filter_sources(labeled_output, required=False)
+            if source_manifest is None:
+                self.logger.warning(
+                    "Cached builder SCF collection predates strict raw-DFT source mapping; "
+                    "existing tasks will not be archived or cleaned automatically."
+                )
+            else:
+                archived_tasks = archive_manager.archive_completed_tasks(current, source_manifest)
+                excluded_tasks = archive_manager.archive_excluded_tasks(current, source_manifest)
+        if archived_tasks and len(archived_tasks) != int(source_manifest["frame_count"]):
+            raise RuntimeError(
+                "Raw DFT archive count does not match builder scf_filter.xyz: "
+                f"archives={len(archived_tasks)} frames={source_manifest['frame_count']}"
+            )
+        ok_count, len_count, no_success_paths, force_count, _ = result
         if not labeled_output.exists() or labeled_output.stat().st_size == 0:
+            archive_manager.cleanup_archived_tasks(archived_tasks)
+            archive_manager.cleanup_excluded_tasks(excluded_tasks)
             raise RuntimeError("SCF finished but no labeled initial dataset was collected")
         labeled_atoms = list(iread(str(labeled_output), index=":"))
         final_stats = self._finalize_labeled_dataset(labeled_atoms)
         if not self.output_xyz.exists() or self.output_xyz.stat().st_size == 0:
             raise RuntimeError("SCF finished but the final initial dataset was not created")
+        archive_manager.cleanup_archived_tasks(archived_tasks)
+        archive_manager.cleanup_excluded_tasks(excluded_tasks)
         self.logger.info(
             "Initial dataset collected: completed=%s, collected=%s, below_force_threshold=%s, final=%s",
             ok_count,

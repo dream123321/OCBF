@@ -1,5 +1,7 @@
 from ase.io import iread
 from ase.data import atomic_numbers,chemical_symbols
+import io
+import itertools
 import os
 from tqdm import tqdm
 from ..path_names import MD_WORK_DIR
@@ -118,11 +120,9 @@ def xyz2cfg(elements, sort_ele, input_path, output_path):
     for index, element in enumerate(ordered_elements):
         map_dic.update({element: index})
 
-    b=list(fin)
     ff = open(output_path,"w")
-    for i in range(len(b)):
+    for atoms in fin:
         #print(i)
-        atoms=b[i]
         ele=atoms.get_chemical_symbols()
         nat=len(ele)
         cell = atoms.get_cell()
@@ -149,18 +149,17 @@ def xyz2cfg(elements, sort_ele, input_path, output_path):
 
 '''不收集丢原子的结构'''
 def dump2cfg(input,out):
-    fin= iread(input)
-    data = list(fin)
-
-    std_num = data[0].get_global_number_of_atoms()
-    index = 0
-    for temp in data:
-        if temp.get_global_number_of_atoms() == std_num:
-            index = index + 1
-    b = data[:index]
+    counts = _dump_atom_counts(input)
+    if not counts:
+        raise ValueError(f'Empty MD trajectory: {input}')
+    # Keep the historical prefix length, even for non-monotonic atom counts.
+    index = sum(count == counts[0] for count in counts)
+    fin = _stream_dump_atoms(input)
+    first = next(fin)
+    b = itertools.islice(itertools.chain([first], fin), index)
 
     map_dic={}
-    ele = list(set(b[0].get_chemical_symbols()))
+    ele = list(set(first.get_chemical_symbols()))
     # if sort_ele:
     #     temp = sorted([atomic_numbers[i] for i in ele])
     #     ele = [chemical_symbols[a] for a in temp]
@@ -171,9 +170,8 @@ def dump2cfg(input,out):
         map_dic.update({ele[i]:chemical_symbols.index(ele[i])-1})
     #print(map_dic)
     ff = open(out,"a")
-    for i in range(len(b)):
+    for atoms in b:
         #print(i)
-        atoms=b[i]
         ele=atoms.get_chemical_symbols()
         nat=len(ele)
         cell = atoms.get_cell()
@@ -201,7 +199,36 @@ def dump2cfg(input,out):
         #ff.write(f"\t{virial[0,0]}  \t{virial[1,1]}  \t{virial[2,2]}  \t{virial[1,2]}  \t{virial[0,2]}  \t{virial[0,1]} \n")
         ff.write("""END_CFG \n""")
     ff.close()
-    return len(b)
+    return index
+
+
+def _dump_atom_counts(path):
+    counts = []
+    with open(path, encoding='utf-8') as handle:
+        if handle.readline().strip() != 'ITEM: TIMESTEP':
+            return [len(atoms) for atoms in iread(path)]
+        for line in handle:
+            if line.strip() == 'ITEM: NUMBER OF ATOMS':
+                value = next(handle, '').strip()
+                counts.append(int(value))
+    return counts
+
+
+def _stream_dump_atoms(path):
+    from ase.io.lammpsrun import read_lammps_dump_text
+    with open(path, encoding='utf-8') as handle:
+        first = handle.readline()
+        if first.strip() != 'ITEM: TIMESTEP':
+            yield from iread(path)
+            return
+        lines = [first]
+        for line in handle:
+            if line.strip() == 'ITEM: TIMESTEP':
+                yield read_lammps_dump_text(io.StringIO(''.join(lines)), index=-1)
+                lines = []
+            lines.append(line)
+        if lines:
+            yield read_lammps_dump_text(io.StringIO(''.join(lines)), index=-1)
 
 def merge_cfg(file_path_1,file_path_2,output_file_path):
     with open(file_path_1, 'r') as file1:
@@ -218,14 +245,30 @@ def cfg2xyz(elements, sort_ele, cfg_file_path, xyz_file_path):
     for index, element in enumerate(ordered_elements):
         map_dic.update({str(index): element})
     with open(cfg_file_path, encoding="utf-8") as handle:
-        blocks = list(_cfg_block_iter(handle.readlines()))
-    _write_extxyz_blocks(blocks, map_dic, xyz_file_path)
+        _write_extxyz_blocks(_stream_cfg_blocks(handle), map_dic, xyz_file_path)
+
+
+def _stream_cfg_blocks(handle):
+    lines = []
+    for line in handle:
+        if line.strip() == 'BEGIN_CFG':
+            if lines:
+                raise RuntimeError('Truncated CFG block before BEGIN_CFG')
+            lines = [line]
+        elif lines:
+            lines.append(line)
+            if line.strip() == 'END_CFG':
+                yield from _cfg_block_iter(lines)
+                lines = []
+    if lines:
+        raise RuntimeError('Truncated CFG block at end of file')
 
 def remove(file):
     if os.path.exists(file):
         os.remove(file)
 
 def merge_cfg_out(pwd,merge_file_dirs,cfg_name,out_name):
+    import shutil
     md_cfg = os.path.join(pwd, MD_WORK_DIR, cfg_name)
     md_out = os.path.join(pwd, MD_WORK_DIR, out_name)
     # remove(md_cfg)
@@ -234,12 +277,14 @@ def merge_cfg_out(pwd,merge_file_dirs,cfg_name,out_name):
         for path in merge_file_dirs:
             single_md_cfg = os.path.join(path, cfg_name)
             with open(single_md_cfg, 'r') as infile:
-                outfile.write(infile.read() + '\n')  # 添加换行符以分隔文件内
+                shutil.copyfileobj(infile, outfile, 1024 * 1024)
+                outfile.write('\n')
     with open(md_out, 'w') as outfile:
         for path in merge_file_dirs:
             single_md_out = os.path.join(path, out_name)
             with open(single_md_out, 'r') as infile:
-                outfile.write(infile.read() + '\n')  # 添加换行符以分隔文件内
+                shutil.copyfileobj(infile, outfile, 1024 * 1024)
+                outfile.write('\n')
     # for path in merge_file_dirs:
     #     single_md_out = os.path.join(path, 'md.out')
     #     single_md_cfg = os.path.join(path, 'md.cfg')
